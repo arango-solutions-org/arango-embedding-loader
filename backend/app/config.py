@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -44,6 +45,18 @@ class Settings(BaseSettings):
     # Collection embedding profiles
     profiles_collection: str = "embedding_loader_profiles"
     start_watchers_on_startup: bool = True
+
+    @model_validator(mode="after")
+    def _use_platform_endpoint(self) -> Settings:
+        """On the Arango Platform (BYOC) the operator injects the coordinator's in-cluster
+        address as ``ARANGO_DEPLOYMENT_ENDPOINT``. Use it unless ``ARANGO_ENDPOINT`` is set.
+        Its certificate comes from the cluster's own CA, so don't verify it unless asked."""
+        injected = os.getenv("ARANGO_DEPLOYMENT_ENDPOINT", "").strip()
+        if injected and "arango_endpoint" not in self.model_fields_set:
+            self.arango_endpoint = injected.rstrip("/")
+            if "arango_verify_ssl" not in self.model_fields_set:
+                self.arango_verify_ssl = False
+        return self
 
 
 @lru_cache

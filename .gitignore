@@ -1,0 +1,11 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+node_modules/
+frontend/dist/
+.DS_Store
+.claude

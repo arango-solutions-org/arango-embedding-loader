@@ -1,0 +1,50 @@
+# Local ArangoDB (with vector indexes enabled) + the embedding loader (API + GUI).
+#
+#   cp .env.example .env        # set ARANGO_PASSWORD
+#   docker compose up -d arangodb          # database only (for local dev)
+#   docker compose up --build              # database + app on http://localhost:8000
+services:
+  arangodb:
+    image: arangodb:3.12
+    command: ["arangod", "--server.endpoint", "tcp://0.0.0.0:8529", "--experimental-vector-index"]
+    environment:
+      ARANGO_ROOT_PASSWORD: ${ARANGO_PASSWORD:?set ARANGO_PASSWORD in .env}
+    ports:
+      - "${ARANGO_HOST_PORT:-8530}:8529"
+    volumes:
+      - arangodb_data:/var/lib/arangodb3
+      - arangodb_apps:/var/lib/arangodb3-apps
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8529/_admin/server/availability || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  app:
+    build:
+      context: .
+      args:
+        EXTRAS: ${APP_EXTRAS:-local,hosted}
+    depends_on:
+      arangodb:
+        condition: service_healthy
+    environment:
+      ARANGO_ENDPOINT: http://arangodb:8529
+      ARANGO_DATABASE: ${ARANGO_DATABASE:-_system}
+      ARANGO_USERNAME: ${ARANGO_USERNAME:-root}
+      ARANGO_PASSWORD: ${ARANGO_PASSWORD}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      COHERE_API_KEY: ${COHERE_API_KEY:-}
+      AWS_REGION: ${AWS_REGION:-}
+      OLLAMA_HOST: ${OLLAMA_HOST:-http://host.docker.internal:11434}
+      HF_HOME: /data/hf
+    ports:
+      - "${APP_HOST_PORT:-8000}:8000"
+    volumes:
+      - hf_cache:/data/hf
+
+volumes:
+  arangodb_data:
+  arangodb_apps:
+  hf_cache:

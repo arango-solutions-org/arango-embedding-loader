@@ -1,0 +1,5876 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Arango Embedding Loader API",
+    "description": "\nLoad NoSQL documents (JSON, JSONL/NDJSON, CSV - optionally gzipped - or a JSON body) into an\nArangoDB collection, **embedding the field(s) you label** with the embedding provider of your\nchoice and storing each vector **inside the same document**.\n\n### Concepts\n* **Embedding spec** - `{source_field | template, target_field, provider | preset, model}`.\n  One or more per load.\n* **Providers** - pluggable: Sentence-Transformers (local Hugging Face models such as\n  `NeuML/pubmedbert-base-embeddings`), OpenAI (and compatible servers), Voyage AI, Cohere,\n  Amazon Bedrock, Ollama, plus any third-party plugin. See `GET /providers`.\n* **Profiles** - attach an embedding spec to a collection once (`PUT /collections/{name}/profile`);\n  every later load into it is embedded automatically, and an optional watcher embeds documents\n  inserted by any other client.\n* **Jobs** - loads run as background jobs. Pass `?wait=true` for a synchronous response, or\n  follow progress with `GET /jobs/{id}` / `GET /jobs/{id}/events` (SSE).\n\n### Connection\nThe server's environment (`ARANGO_ENDPOINT`, `ARANGO_DATABASE`, `ARANGO_USERNAME`,\n`ARANGO_PASSWORD`) is the default. Override it per request with the headers\n`X-Arango-Endpoint`, `X-Arango-Database`, `X-Arango-Username`, `X-Arango-Password`.\n",
+    "license": {
+      "name": "Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "System"
+        ],
+        "summary": "Liveness check",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/connection": {
+      "get": {
+        "tags": [
+          "Connection"
+        ],
+        "summary": "Test the ArangoDB connection",
+        "description": "Connects with the server defaults or the `X-Arango-*` header overrides and reports the server version. Never returns the password.",
+        "operationId": "test_connection_api_v1_connection_get",
+        "parameters": [
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections": {
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "List collections",
+        "operationId": "list_collections_api_v1_collections_get",
+        "parameters": [
+          {
+            "name": "include_counts",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Include document counts.",
+              "default": true,
+              "title": "Include Counts"
+            },
+            "description": "Include document counts."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CollectionInfo"
+                  },
+                  "title": "Response List Collections Api V1 Collections Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Create a collection",
+        "operationId": "create_collection_api_v1_collections_post",
+        "parameters": [
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCollectionRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CollectionInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/sample": {
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Sample documents and detect field paths",
+        "operationId": "sample_collection_api_v1_collections__name__sample_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 500,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SampleResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/indexes": {
+      "get": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "List indexes",
+        "operationId": "list_indexes_api_v1_collections__name__indexes_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "title": "Response List Indexes Api V1 Collections  Name  Indexes Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/vector-index": {
+      "post": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Create a vector index",
+        "description": "Creates an ArangoDB vector index (requires ArangoDB 3.12.4+ started with `--experimental-vector-index`). The collection must already contain vectors. Returns `{status: created|exists, index}`.",
+        "operationId": "create_vector_index_api_v1_collections__name__vector_index_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VectorIndexRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Create Vector Index Api V1 Collections  Name  Vector Index Post"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/embed": {
+      "post": {
+        "tags": [
+          "Collections"
+        ],
+        "summary": "Embed documents already in a collection",
+        "description": "Re-embeds existing documents (by default only those missing the target vector). Omit `embeddings` to use the collection's profile.",
+        "operationId": "reembed_collection_api_v1_collections__name__embed_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE.",
+              "default": false,
+              "title": "Wait"
+            },
+            "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReembedRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Job accepted (when `wait=false`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/profiles": {
+      "get": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "List embedding profiles",
+        "operationId": "list_profiles_api_v1_profiles_get",
+        "parameters": [
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Profile"
+                  },
+                  "title": "Response List Profiles Api V1 Profiles Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/profile": {
+      "put": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Set up an auto-embedding collection",
+        "description": "Creates the collection if needed and attaches an embedding profile. Afterwards every load into the collection is embedded automatically (no `embeddings` needed), and with `auto_watch` a background watcher also embeds documents inserted by any other client. Secrets in `provider_options` are never persisted - configure API keys via environment variables for profiles.",
+        "operationId": "put_profile_api_v1_collections__name__profile_put",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Collection name.",
+              "examples": [
+                "pubmed"
+              ],
+              "title": "Name"
+            },
+            "description": "Collection name."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileConfig"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Get a profile and its embedding status",
+        "operationId": "get_profile_status_api_v1_collections__name__profile_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Collection name.",
+              "examples": [
+                "pubmed"
+              ],
+              "title": "Name"
+            },
+            "description": "Collection name."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProfileStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Remove a profile (keeps data)",
+        "operationId": "delete_profile_api_v1_collections__name__profile_delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Collection name.",
+              "examples": [
+                "pubmed"
+              ],
+              "title": "Name"
+            },
+            "description": "Collection name."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/profile/watcher/start": {
+      "post": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Start the auto-embed watcher",
+        "operationId": "start_watcher_api_v1_collections__name__profile_watcher_start_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Collection name.",
+              "examples": [
+                "pubmed"
+              ],
+              "title": "Name"
+            },
+            "description": "Collection name."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatcherState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/collections/{name}/profile/watcher/stop": {
+      "post": {
+        "tags": [
+          "Profiles"
+        ],
+        "summary": "Stop the auto-embed watcher",
+        "operationId": "stop_watcher_api_v1_collections__name__profile_watcher_stop_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "description": "Collection name.",
+              "examples": [
+                "pubmed"
+              ],
+              "title": "Name"
+            },
+            "description": "Collection name."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatcherState"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/providers": {
+      "get": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "List embedding providers",
+        "operationId": "providers_api_v1_providers_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProviderInfo"
+                  },
+                  "type": "array",
+                  "title": "Response Providers Api V1 Providers Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{name}/models": {
+      "get": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "List models for a provider",
+        "operationId": "provider_models_api_v1_providers__name__models_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ModelInfo"
+                  },
+                  "title": "Response Provider Models Api V1 Providers  Name  Models Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/providers/{name}/embed": {
+      "post": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "Embed sample texts (connectivity / dimension check)",
+        "operationId": "provider_embed_api_v1_providers__name__embed_post",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Name"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmbedTestRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmbedTestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/presets": {
+      "get": {
+        "tags": [
+          "Providers"
+        ],
+        "summary": "List provider/model presets",
+        "operationId": "presets_api_v1_presets_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Preset"
+                  },
+                  "type": "array",
+                  "title": "Response Presets Api V1 Presets Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/preview": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Preview a file and detect its fields",
+        "description": "Parses the first documents of an uploaded JSON / JSONL / CSV file (optionally gzipped) and returns a sample plus detected field paths, so you can choose which field to embed.",
+        "operationId": "preview_api_v1_preview_post",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 1000,
+              "minimum": 1,
+              "default": 50,
+              "title": "Limit"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_preview_api_v1_preview_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/load": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Load documents from the request body",
+        "description": "Embeds the labeled field(s) of each document and inserts the documents - with the vectors stored in the same document - into `collection`. If `embeddings` is omitted, the collection's embedding profile is used.",
+        "operationId": "load_documents_api_v1_load_post",
+        "parameters": [
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE.",
+              "default": false,
+              "title": "Wait"
+            },
+            "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoadDocumentsRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Job accepted (when `wait=false`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/load/file": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Load documents from an uploaded file",
+        "description": "Multipart upload of a JSON array, JSONL/NDJSON or CSV file (optionally gzipped). `config` is a JSON-encoded `FileLoadOptions` object; `collection` may be given as a query parameter instead. With an embedding profile on the collection, `config` can be omitted entirely:\n\n`curl -F file=@part1.jsonl 'http://localhost:8000/api/v1/load/file?collection=pubmed'`",
+        "operationId": "load_file_api_v1_load_file_post",
+        "parameters": [
+          {
+            "name": "collection",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Target collection.",
+              "title": "Collection"
+            },
+            "description": "Target collection."
+          },
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE.",
+              "default": false,
+              "title": "Wait"
+            },
+            "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_load_file_api_v1_load_file_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Job accepted (when `wait=false`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/load/url": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Load documents from remote file URLs",
+        "description": "Streams one or more HTTP(S) or public `gs://` files (JSON / JSONL / CSV, optionally gzipped) through the embedding pipeline without staging them on disk.",
+        "operationId": "load_url_api_v1_load_url_post",
+        "parameters": [
+          {
+            "name": "wait",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean",
+              "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE.",
+              "default": false,
+              "title": "Wait"
+            },
+            "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
+          },
+          {
+            "name": "x-arango-endpoint",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
+              "title": "X-Arango-Endpoint"
+            },
+            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+          },
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB database name.",
+              "title": "X-Arango-Database"
+            },
+            "description": "Override the ArangoDB database name."
+          },
+          {
+            "name": "x-arango-username",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB username.",
+              "title": "X-Arango-Username"
+            },
+            "description": "Override the ArangoDB username."
+          },
+          {
+            "name": "x-arango-password",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Override the ArangoDB password.",
+              "title": "X-Arango-Password"
+            },
+            "description": "Override the ArangoDB password."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoadUrlRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Job accepted (when `wait=false`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/preview/url": {
+      "post": {
+        "tags": [
+          "Ingest"
+        ],
+        "summary": "Preview a remote file and detect its fields",
+        "description": "Streams only the first `limit` documents of the remote file.",
+        "operationId": "preview_url_api_v1_preview_url_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UrlPreviewRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "List recent jobs",
+        "operationId": "list_jobs_api_v1_jobs_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/Job"
+                  },
+                  "type": "array",
+                  "title": "Response List Jobs Api V1 Jobs Get"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Get a job",
+        "operationId": "get_job_api_v1_jobs__job_id__get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Cancel a running job",
+        "operationId": "cancel_job_api_v1_jobs__job_id__delete",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Job"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/jobs/{job_id}/events": {
+      "get": {
+        "tags": [
+          "Jobs"
+        ],
+        "summary": "Stream job progress (Server-Sent Events)",
+        "description": "`text/event-stream` of `job` events whose data is the Job JSON. The stream closes after the job reaches a terminal state.",
+        "operationId": "job_events_api_v1_jobs__job_id__events_get",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Job Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "text/event-stream": {}
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Body_load_file_api_v1_load_file_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "description": "JSON, JSONL/NDJSON or CSV file (.gz ok)."
+          },
+          "config": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Config",
+            "description": "JSON-encoded FileLoadOptions (see schema)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_load_file_api_v1_load_file_post"
+      },
+      "Body_preview_api_v1_preview_post": {
+        "properties": {
+          "file": {
+            "type": "string",
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "description": "JSON, JSONL/NDJSON or CSV file (.gz ok)."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "json",
+              "jsonl",
+              "csv"
+            ],
+            "title": "Format",
+            "default": "auto"
+          },
+          "csv_delimiter": {
+            "type": "string",
+            "maxLength": 1,
+            "minLength": 1,
+            "title": "Csv Delimiter",
+            "default": ","
+          },
+          "json_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path"
+          }
+        },
+        "type": "object",
+        "required": [
+          "file"
+        ],
+        "title": "Body_preview_api_v1_preview_post"
+      },
+      "CollectionInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "type": {
+            "type": "string",
+            "title": "Type"
+          },
+          "count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Count"
+          },
+          "has_profile": {
+            "type": "boolean",
+            "title": "Has Profile",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "type",
+          "count",
+          "has_profile"
+        ],
+        "title": "CollectionInfo"
+      },
+      "ConnectionInfo": {
+        "properties": {
+          "connected": {
+            "type": "boolean",
+            "title": "Connected"
+          },
+          "server_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Server Version"
+          },
+          "database": {
+            "type": "string",
+            "title": "Database"
+          },
+          "connection": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Connection"
+          },
+          "vector_index_supported": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Vector Index Supported",
+            "description": "Whether the server version supports vector indexes (3.12.4+)."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "connected",
+          "server_version",
+          "database",
+          "connection",
+          "vector_index_supported",
+          "error"
+        ],
+        "title": "ConnectionInfo"
+      },
+      "CreateCollectionRequest": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "examples": [
+              "pubmed"
+            ]
+          },
+          "shards": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Shards",
+            "description": "Cluster only: number of shards."
+          },
+          "replication_factor": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replication Factor",
+            "description": "Cluster only."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "title": "CreateCollectionRequest"
+      },
+      "CsvOptions": {
+        "properties": {
+          "delimiter": {
+            "type": "string",
+            "maxLength": 1,
+            "minLength": 1,
+            "title": "Delimiter",
+            "description": "Field delimiter.",
+            "default": ","
+          },
+          "infer_types": {
+            "type": "boolean",
+            "title": "Infer Types",
+            "description": "Convert numeric / boolean / empty cells to JSON types.",
+            "default": true
+          }
+        },
+        "type": "object",
+        "title": "CsvOptions"
+      },
+      "DocumentError": {
+        "properties": {
+          "index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Index",
+            "description": "Position of the document in the input."
+          },
+          "key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key"
+          },
+          "error": {
+            "type": "string",
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "index",
+          "key",
+          "error"
+        ],
+        "title": "DocumentError"
+      },
+      "EmbedTestRequest": {
+        "properties": {
+          "texts": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "maxItems": 256,
+            "minItems": 1,
+            "title": "Texts",
+            "examples": [
+              [
+                "BRCA1 mutation"
+              ]
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions"
+          },
+          "input_type": {
+            "type": "string",
+            "enum": [
+              "document",
+              "query"
+            ],
+            "title": "Input Type",
+            "default": "document"
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provider Options"
+          },
+          "include_vectors": {
+            "type": "boolean",
+            "title": "Include Vectors",
+            "description": "Return full vectors (otherwise first 8).",
+            "default": false
+          }
+        },
+        "type": "object",
+        "required": [
+          "texts"
+        ],
+        "title": "EmbedTestRequest"
+      },
+      "EmbedTestResponse": {
+        "properties": {
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "dimension": {
+            "type": "integer",
+            "title": "Dimension"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "elapsed_ms": {
+            "type": "number",
+            "title": "Elapsed Ms"
+          },
+          "vectors": {
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "type": "array",
+            "title": "Vectors"
+          }
+        },
+        "type": "object",
+        "required": [
+          "provider",
+          "model",
+          "dimension",
+          "count",
+          "elapsed_ms",
+          "vectors"
+        ],
+        "title": "EmbedTestResponse"
+      },
+      "EmbeddingFieldSpec": {
+        "properties": {
+          "source_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Field",
+            "description": "Dot-path of the field to embed, e.g. `text` or `content.body`.",
+            "examples": [
+              "text"
+            ]
+          },
+          "template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Template",
+            "description": "Alternative to `source_field`: compose text from several fields using `{path}` placeholders, e.g. `{title}\\n\\n{abstract}`."
+          },
+          "target_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Field",
+            "description": "Field that receives the vector. Defaults to `<source_field>_embedding` (or `embedding` when using a template).",
+            "examples": [
+              "embedding"
+            ]
+          },
+          "preset": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Preset",
+            "description": "Named preset (see `GET /presets`) that sets provider, model and options.",
+            "examples": [
+              "pubmedbert"
+            ]
+          },
+          "provider": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider",
+            "description": "Provider name (see `GET /providers`).",
+            "examples": [
+              "sentence_transformers"
+            ]
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model",
+            "description": "Model id. Defaults to the provider's default model.",
+            "examples": [
+              "NeuML/pubmedbert-base-embeddings"
+            ]
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 65536.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions",
+            "description": "Requested output dimension, if the model supports it."
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provider Options",
+            "description": "Provider-specific options (API key, base URL, device...). Never stored."
+          },
+          "on_missing": {
+            "type": "string",
+            "enum": [
+              "skip",
+              "null",
+              "error"
+            ],
+            "title": "On Missing",
+            "description": "What to do when the source is missing/empty: `skip` (store document without vector), `null` (set the target to null) or `error` (reject the document).",
+            "default": "skip"
+          }
+        },
+        "type": "object",
+        "title": "EmbeddingFieldSpec",
+        "description": "Labels a field (or template of fields) to embed and where to store the vector."
+      },
+      "ErrorResponse": {
+        "properties": {
+          "error": {
+            "type": "string",
+            "title": "Error",
+            "description": "Machine readable error code.",
+            "examples": [
+              "bad_request"
+            ]
+          },
+          "detail": {
+            "title": "Detail",
+            "description": "Human readable explanation or validation details."
+          }
+        },
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "title": "ErrorResponse"
+      },
+      "FieldPathInfo": {
+        "properties": {
+          "path": {
+            "type": "string",
+            "title": "Path",
+            "description": "Dot-path of the field, e.g. `content.body`."
+          },
+          "types": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Types",
+            "description": "JSON types observed for this field."
+          },
+          "coverage": {
+            "type": "number",
+            "title": "Coverage",
+            "description": "Fraction of sampled documents containing it."
+          },
+          "avg_length": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Avg Length",
+            "description": "Average length for string values."
+          },
+          "example": {
+            "title": "Example",
+            "description": "Truncated example value."
+          },
+          "embeddable": {
+            "type": "boolean",
+            "title": "Embeddable",
+            "description": "Heuristic: looks like text worth embedding."
+          }
+        },
+        "type": "object",
+        "required": [
+          "path",
+          "types",
+          "coverage",
+          "avg_length",
+          "example",
+          "embeddable"
+        ],
+        "title": "FieldPathInfo"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "type": "array",
+            "title": "Detail"
+          }
+        },
+        "type": "object",
+        "title": "HTTPValidationError"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "version": {
+            "type": "string",
+            "title": "Version"
+          }
+        },
+        "type": "object",
+        "required": [
+          "status",
+          "version"
+        ],
+        "title": "Health"
+      },
+      "Job": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "load_documents",
+              "load_file",
+              "load_url",
+              "reembed"
+            ],
+            "title": "Kind"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "default": "queued"
+          },
+          "collection": {
+            "type": "string",
+            "title": "Collection"
+          },
+          "database": {
+            "type": "string",
+            "title": "Database"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Total",
+            "description": "Total documents when known."
+          },
+          "bytes_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Total"
+          },
+          "bytes_read": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bytes Read"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Progress",
+            "description": "0..1 when it can be estimated."
+          },
+          "counts": {
+            "$ref": "#/components/schemas/JobCounts"
+          },
+          "errors": {
+            "items": {
+              "$ref": "#/components/schemas/DocumentError"
+            },
+            "type": "array",
+            "title": "Errors",
+            "description": "First 100 errors."
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "config": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Config",
+            "description": "Sanitized job config."
+          },
+          "result": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Result",
+            "description": "Extra results: vector index info, dry-run samples."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "status",
+          "collection",
+          "database",
+          "created_at",
+          "started_at",
+          "finished_at",
+          "total",
+          "bytes_total",
+          "bytes_read",
+          "progress",
+          "counts",
+          "errors",
+          "message",
+          "config",
+          "result"
+        ],
+        "title": "Job"
+      },
+      "JobCounts": {
+        "properties": {
+          "read": {
+            "type": "integer",
+            "title": "Read",
+            "default": 0
+          },
+          "embedded": {
+            "type": "integer",
+            "title": "Embedded",
+            "default": 0
+          },
+          "written": {
+            "type": "integer",
+            "title": "Written",
+            "default": 0
+          },
+          "updated": {
+            "type": "integer",
+            "title": "Updated",
+            "default": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "read",
+          "embedded",
+          "written",
+          "updated",
+          "skipped",
+          "failed"
+        ],
+        "title": "JobCounts"
+      },
+      "LoadDocumentsRequest": {
+        "properties": {
+          "collection": {
+            "type": "string",
+            "title": "Collection",
+            "description": "Target collection.",
+            "examples": [
+              "pubmed"
+            ]
+          },
+          "create_collection": {
+            "type": "boolean",
+            "title": "Create Collection",
+            "description": "Create the collection if it is missing.",
+            "default": true
+          },
+          "embeddings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/EmbeddingFieldSpec"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embeddings",
+            "description": "Fields to embed. Omit to use the collection's embedding profile (see `PUT /collections/{name}/profile`)."
+          },
+          "key_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Field",
+            "description": "Field whose value becomes the document `_key` (stringified).",
+            "examples": [
+              "id"
+            ]
+          },
+          "on_duplicate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "update",
+                  "replace",
+                  "ignore"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Duplicate",
+            "description": "Behaviour when `_key` already exists: `error` (report per-document error), `update` (merge), `replace` or `ignore`. Defaults to the profile's setting or `error`."
+          },
+          "batch_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Size",
+            "description": "Documents per batch."
+          },
+          "store_metadata": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Store Metadata",
+            "description": "Store `<target>_meta` ({status, provider, model, dimension, embedded_at}) next to each vector. Defaults to true."
+          },
+          "vector_index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorIndexSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Create an ArangoDB vector index after the load."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Embed but do not write; returns sample output.",
+            "default": false
+          },
+          "max_documents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Documents",
+            "description": "Stop after this many documents."
+          },
+          "documents": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Documents",
+            "description": "Documents to load."
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection",
+          "documents"
+        ],
+        "title": "LoadDocumentsRequest",
+        "examples": [
+          {
+            "collection": "pubmed",
+            "documents": [
+              {
+                "id": 1234,
+                "text": "Title. Abstract text... Keywords: oncology"
+              }
+            ],
+            "embeddings": [
+              {
+                "preset": "pubmedbert",
+                "source_field": "text",
+                "target_field": "embedding"
+              }
+            ],
+            "key_field": "id"
+          }
+        ]
+      },
+      "LoadUrlRequest": {
+        "properties": {
+          "collection": {
+            "type": "string",
+            "title": "Collection",
+            "description": "Target collection.",
+            "examples": [
+              "pubmed"
+            ]
+          },
+          "create_collection": {
+            "type": "boolean",
+            "title": "Create Collection",
+            "description": "Create the collection if it is missing.",
+            "default": true
+          },
+          "embeddings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/EmbeddingFieldSpec"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embeddings",
+            "description": "Fields to embed. Omit to use the collection's embedding profile (see `PUT /collections/{name}/profile`)."
+          },
+          "key_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Field",
+            "description": "Field whose value becomes the document `_key` (stringified).",
+            "examples": [
+              "id"
+            ]
+          },
+          "on_duplicate": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "error",
+                  "update",
+                  "replace",
+                  "ignore"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "On Duplicate",
+            "description": "Behaviour when `_key` already exists: `error` (report per-document error), `update` (merge), `replace` or `ignore`. Defaults to the profile's setting or `error`."
+          },
+          "batch_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Size",
+            "description": "Documents per batch."
+          },
+          "store_metadata": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Store Metadata",
+            "description": "Store `<target>_meta` ({status, provider, model, dimension, embedded_at}) next to each vector. Defaults to true."
+          },
+          "vector_index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorIndexSpec"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Create an ArangoDB vector index after the load."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "title": "Dry Run",
+            "description": "Embed but do not write; returns sample output.",
+            "default": false
+          },
+          "max_documents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Documents",
+            "description": "Stop after this many documents."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "json",
+              "jsonl",
+              "csv"
+            ],
+            "title": "Format",
+            "description": "Input format; `auto` detects it.",
+            "default": "auto"
+          },
+          "csv": {
+            "$ref": "#/components/schemas/CsvOptions"
+          },
+          "json_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path",
+            "description": "ijson prefix of the document array inside a JSON file, e.g. `data.item`."
+          },
+          "urls": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Urls",
+            "description": "HTTP(S) or public `gs://bucket/object` URLs of JSON/JSONL/CSV files (.gz ok).",
+            "examples": [
+              [
+                "https://storage.googleapis.com/my-bucket/data/part-0001.jsonl"
+              ]
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection",
+          "urls"
+        ],
+        "title": "LoadUrlRequest"
+      },
+      "ModelInfo": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "title": "Id"
+          },
+          "dimension": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimension",
+            "description": "Output dimension, when known."
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "dimension",
+          "description"
+        ],
+        "title": "ModelInfo"
+      },
+      "Preset": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Label"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "provider": {
+            "type": "string",
+            "title": "Provider"
+          },
+          "model": {
+            "type": "string",
+            "title": "Model"
+          },
+          "dimensions": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimensions",
+            "description": "Expected vector dimension."
+          },
+          "provider_options": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Provider Options"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "label",
+          "description",
+          "provider",
+          "model",
+          "dimensions",
+          "provider_options"
+        ],
+        "title": "Preset"
+      },
+      "PreviewResponse": {
+        "properties": {
+          "filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Filename"
+          },
+          "format": {
+            "type": "string",
+            "title": "Format"
+          },
+          "sample": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sample"
+          },
+          "fields": {
+            "items": {},
+            "type": "array",
+            "title": "Fields",
+            "description": "Detected field paths (FieldPathInfo)."
+          },
+          "estimated_total": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Total",
+            "description": "Record count for JSONL/CSV."
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "filename",
+          "format",
+          "sample",
+          "fields",
+          "estimated_total",
+          "size_bytes"
+        ],
+        "title": "PreviewResponse"
+      },
+      "Profile": {
+        "properties": {
+          "embeddings": {
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingFieldSpec"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Embeddings"
+          },
+          "key_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Field",
+            "examples": [
+              "id"
+            ]
+          },
+          "on_duplicate": {
+            "type": "string",
+            "enum": [
+              "error",
+              "update",
+              "replace",
+              "ignore"
+            ],
+            "title": "On Duplicate",
+            "default": "update"
+          },
+          "batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "default": 64
+          },
+          "vector_index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorIndexSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_watch": {
+            "type": "boolean",
+            "title": "Auto Watch",
+            "description": "Run a background watcher that embeds documents inserted into the collection by any client (arangoimport, drivers, web UI).",
+            "default": false
+          },
+          "watch_interval_s": {
+            "type": "number",
+            "maximum": 3600.0,
+            "minimum": 1.0,
+            "title": "Watch Interval S",
+            "default": 10.0
+          },
+          "collection": {
+            "type": "string",
+            "title": "Collection"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "embeddings",
+          "key_field",
+          "on_duplicate",
+          "batch_size",
+          "vector_index",
+          "auto_watch",
+          "watch_interval_s",
+          "collection",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Profile",
+        "examples": [
+          {
+            "auto_watch": true,
+            "embeddings": [
+              {
+                "preset": "pubmedbert",
+                "source_field": "text",
+                "target_field": "embedding"
+              }
+            ],
+            "key_field": "id",
+            "on_duplicate": "update",
+            "vector_index": {
+              "create": true,
+              "metric": "cosine"
+            }
+          }
+        ]
+      },
+      "ProfileConfig": {
+        "properties": {
+          "embeddings": {
+            "items": {
+              "$ref": "#/components/schemas/EmbeddingFieldSpec"
+            },
+            "type": "array",
+            "minItems": 1,
+            "title": "Embeddings"
+          },
+          "key_field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Field",
+            "examples": [
+              "id"
+            ]
+          },
+          "on_duplicate": {
+            "type": "string",
+            "enum": [
+              "error",
+              "update",
+              "replace",
+              "ignore"
+            ],
+            "title": "On Duplicate",
+            "default": "update"
+          },
+          "batch_size": {
+            "type": "integer",
+            "maximum": 10000.0,
+            "minimum": 1.0,
+            "title": "Batch Size",
+            "default": 64
+          },
+          "vector_index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorIndexSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "auto_watch": {
+            "type": "boolean",
+            "title": "Auto Watch",
+            "description": "Run a background watcher that embeds documents inserted into the collection by any client (arangoimport, drivers, web UI).",
+            "default": false
+          },
+          "watch_interval_s": {
+            "type": "number",
+            "maximum": 3600.0,
+            "minimum": 1.0,
+            "title": "Watch Interval S",
+            "default": 10.0
+          }
+        },
+        "type": "object",
+        "required": [
+          "embeddings"
+        ],
+        "title": "ProfileConfig",
+        "description": "Auto-embedding configuration attached to a collection.",
+        "examples": [
+          {
+            "auto_watch": true,
+            "embeddings": [
+              {
+                "preset": "pubmedbert",
+                "source_field": "text",
+                "target_field": "embedding"
+              }
+            ],
+            "key_field": "id",
+            "on_duplicate": "update",
+            "vector_index": {
+              "create": true,
+              "metric": "cosine"
+            }
+          }
+        ]
+      },
+      "ProfileStatus": {
+        "properties": {
+          "profile": {
+            "$ref": "#/components/schemas/Profile"
+          },
+          "total_documents": {
+            "type": "integer",
+            "title": "Total Documents"
+          },
+          "embedded_documents": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Embedded Documents",
+            "description": "Per target field: documents that have a vector."
+          },
+          "pending_documents": {
+            "type": "integer",
+            "title": "Pending Documents",
+            "description": "Documents not yet processed by any spec."
+          },
+          "watcher": {
+            "$ref": "#/components/schemas/WatcherState"
+          },
+          "indexes": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Indexes"
+          }
+        },
+        "type": "object",
+        "required": [
+          "profile",
+          "total_documents",
+          "embedded_documents",
+          "pending_documents",
+          "watcher",
+          "indexes"
+        ],
+        "title": "ProfileStatus"
+      },
+      "ProviderInfo": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name"
+          },
+          "label": {
+            "type": "string",
+            "title": "Label"
+          },
+          "description": {
+            "type": "string",
+            "title": "Description"
+          },
+          "available": {
+            "type": "boolean",
+            "title": "Available"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          },
+          "default_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default Model"
+          },
+          "supports_dimensions": {
+            "type": "boolean",
+            "title": "Supports Dimensions"
+          },
+          "max_batch_size": {
+            "type": "integer",
+            "title": "Max Batch Size"
+          },
+          "install_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Install Hint"
+          },
+          "options_schema": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Options Schema",
+            "description": "JSON Schema of `provider_options`."
+          },
+          "known_models": {
+            "items": {
+              "$ref": "#/components/schemas/ModelInfo"
+            },
+            "type": "array",
+            "title": "Known Models"
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "label",
+          "description",
+          "available",
+          "reason",
+          "default_model",
+          "supports_dimensions",
+          "max_batch_size",
+          "install_hint",
+          "options_schema",
+          "known_models"
+        ],
+        "title": "ProviderInfo"
+      },
+      "ReembedRequest": {
+        "properties": {
+          "embeddings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/EmbeddingFieldSpec"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Embeddings",
+            "description": "Fields to embed. Omit to use the collection's profile."
+          },
+          "only_missing": {
+            "type": "boolean",
+            "title": "Only Missing",
+            "description": "Only embed documents where the target vector is missing.",
+            "default": true
+          },
+          "filter": {
+            "additionalProperties": true,
+            "type": "object",
+            "title": "Filter",
+            "description": "Equality filters on dot-path fields, e.g. `{\"lang\": \"en\"}`."
+          },
+          "batch_size": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "maximum": 10000.0,
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Batch Size"
+          },
+          "store_metadata": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Store Metadata"
+          },
+          "vector_index": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/VectorIndexSpec"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "max_documents": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Documents"
+          }
+        },
+        "type": "object",
+        "title": "ReembedRequest"
+      },
+      "SampleResponse": {
+        "properties": {
+          "collection": {
+            "type": "string",
+            "title": "Collection"
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          },
+          "sample": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array",
+            "title": "Sample"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/FieldPathInfo"
+            },
+            "type": "array",
+            "title": "Fields"
+          }
+        },
+        "type": "object",
+        "required": [
+          "collection",
+          "count",
+          "sample",
+          "fields"
+        ],
+        "title": "SampleResponse"
+      },
+      "UrlPreviewRequest": {
+        "properties": {
+          "url": {
+            "type": "string",
+            "title": "Url",
+            "description": "HTTP(S) or public gs:// URL."
+          },
+          "format": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "json",
+              "jsonl",
+              "csv"
+            ],
+            "title": "Format",
+            "default": "auto"
+          },
+          "csv": {
+            "$ref": "#/components/schemas/CsvOptions"
+          },
+          "json_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Json Path"
+          },
+          "limit": {
+            "type": "integer",
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Limit",
+            "default": 50
+          }
+        },
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "title": "UrlPreviewRequest"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "type": "array",
+            "title": "Location"
+          },
+          "msg": {
+            "type": "string",
+            "title": "Message"
+          },
+          "type": {
+            "type": "string",
+            "title": "Error Type"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "ctx": {
+            "type": "object",
+            "title": "Context"
+          }
+        },
+        "type": "object",
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError"
+      },
+      "VectorIndexRequest": {
+        "properties": {
+          "field": {
+            "type": "string",
+            "title": "Field",
+            "examples": [
+              "embedding"
+            ]
+          },
+          "metric": {
+            "type": "string",
+            "title": "Metric",
+            "description": "cosine | l2 | innerProduct",
+            "default": "cosine"
+          },
+          "dimension": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dimension",
+            "description": "Vector dimension; detected from a document when omitted."
+          },
+          "n_lists": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Lists"
+          },
+          "default_n_probe": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default N Probe"
+          },
+          "training_iterations": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Iterations"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "parallelism": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parallelism"
+          }
+        },
+        "type": "object",
+        "required": [
+          "field"
+        ],
+        "title": "VectorIndexRequest"
+      },
+      "VectorIndexSpec": {
+        "properties": {
+          "create": {
+            "type": "boolean",
+            "title": "Create",
+            "description": "Create the index after loading if missing.",
+            "default": true
+          },
+          "field": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Field",
+            "description": "Field to index. Defaults to the first embedding target field."
+          },
+          "metric": {
+            "type": "string",
+            "enum": [
+              "cosine",
+              "l2",
+              "innerProduct"
+            ],
+            "title": "Metric",
+            "default": "cosine"
+          },
+          "n_lists": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "N Lists",
+            "description": "Number of IVF clusters. Default \u2248 15\u00b7\u221aN, capped at N/40."
+          },
+          "default_n_probe": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Default N Probe",
+            "description": "Default clusters probed per query."
+          },
+          "training_iterations": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Training Iterations"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name",
+            "description": "Index name. Defaults to `vec_<field>`."
+          },
+          "parallelism": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 1.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Parallelism",
+            "description": "Threads used to build the index."
+          }
+        },
+        "type": "object",
+        "title": "VectorIndexSpec",
+        "description": "ArangoDB vector index settings.\n\nRequires ArangoDB 3.12.4+ started with ``--experimental-vector-index``."
+      },
+      "WatcherState": {
+        "properties": {
+          "running": {
+            "type": "boolean",
+            "title": "Running",
+            "default": false
+          },
+          "last_run_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Run At"
+          },
+          "last_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Error"
+          },
+          "embedded": {
+            "type": "integer",
+            "title": "Embedded",
+            "default": 0
+          },
+          "failed": {
+            "type": "integer",
+            "title": "Failed",
+            "default": 0
+          },
+          "skipped": {
+            "type": "integer",
+            "title": "Skipped",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "required": [
+          "running",
+          "last_run_at",
+          "last_error",
+          "embedded",
+          "failed",
+          "skipped"
+        ],
+        "title": "WatcherState"
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "System",
+      "description": "Health and version."
+    },
+    {
+      "name": "Connection",
+      "description": "Verify ArangoDB connectivity."
+    },
+    {
+      "name": "Collections",
+      "description": "Browse collections, sample fields, manage indexes."
+    },
+    {
+      "name": "Profiles",
+      "description": "Auto-embedding collections (embed on load / watcher)."
+    },
+    {
+      "name": "Providers",
+      "description": "Embedding providers, models and presets."
+    },
+    {
+      "name": "Ingest",
+      "description": "Preview files and load documents with embeddings."
+    },
+    {
+      "name": "Jobs",
+      "description": "Track, stream and cancel load jobs."
+    }
+  ],
+  "servers": [
+    {
+      "url": "http://localhost:8000",
+      "description": "Local development"
+    }
+  ]
+}

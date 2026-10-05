@@ -1,0 +1,16 @@
+{
+  "embeddings": [
+    {
+      "source_field": "text",
+      "target_field": "embedding",
+      "preset": "pubmedbert",
+      "on_missing": "skip"
+    }
+  ],
+  "key_field": "id",
+  "on_duplicate": "update",
+  "batch_size": 64,
+  "vector_index": { "create": true, "metric": "cosine" },
+  "auto_watch": true,
+  "watch_interval_s": 10
+}

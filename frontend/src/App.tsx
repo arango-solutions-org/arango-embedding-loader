@@ -1,6 +1,7 @@
 import { BookOpen, Database, ListChecks, Upload } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { apiBase } from "./api/client";
 import { ConnectionPanel, ConnectionStatus } from "./components/ConnectionPanel";
 import { Collections } from "./pages/Collections";
 import { Jobs } from "./pages/Jobs";
@@ -58,7 +59,7 @@ export default function App() {
   return (
     <div className="flex h-full">
       <nav className="flex w-20 shrink-0 flex-col items-center gap-2 bg-black px-2 py-4" aria-label="Main">
-        <img src="/favicon.svg" alt="" className="mb-4 size-9" />
+        <img src="favicon.svg" alt="" className="mb-4 size-9" />
         <NavItem active={route === "load"} label="Load" icon={<Upload className="size-5" />} onClick={() => setRoute("load")} />
         <NavItem
           active={route === "collections"}
@@ -68,7 +69,7 @@ export default function App() {
         />
         <NavItem active={route === "jobs"} label="Jobs" icon={<ListChecks className="size-5" />} onClick={() => setRoute("jobs")} />
         <div className="mt-auto w-full">
-          <NavItem label="API docs" icon={<BookOpen className="size-5" />} href="/docs" />
+          <NavItem label="API docs" icon={<BookOpen className="size-5" />} href={`${apiBase}/docs`} />
         </div>
       </nav>
       <div className="flex min-w-0 flex-1 flex-col">

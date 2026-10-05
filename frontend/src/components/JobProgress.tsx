@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-import { api, unwrap, type Job } from "../api/client";
+import { api, apiBase, unwrap, type Job } from "../api/client";
 import { formatBytes, formatDuration, formatNumber } from "../lib/spec";
 import { Badge, Button, ProgressBar } from "./ui";
 
@@ -18,7 +18,7 @@ export function useJob(initial: Job): Job {
   const [job, setJob] = useState(initial);
   useEffect(() => {
     if (TERMINAL.has(initial.status)) return;
-    const source = new EventSource(`/api/v1/jobs/${initial.id}/events`);
+    const source = new EventSource(`${apiBase}/api/v1/jobs/${initial.id}/events`);
     source.addEventListener("job", (event) => {
       const next = JSON.parse((event as MessageEvent).data) as Job;
       setJob(next);

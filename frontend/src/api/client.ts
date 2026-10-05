@@ -46,7 +46,22 @@ const withConnection: Middleware = {
   },
 };
 
-export const api = createClient<paths>({ baseUrl: "" });
+/**
+ * The API base for a page served at `pathname`. On the Arango Platform (BYOC) the app is
+ * mounted under a prefix such as `/_service/uds/_db/<db>/<instance>/`, and a root-relative
+ * `/api/...` would hit the domain root instead, so every call is prefixed with the
+ * directory the page was served from. Locally that is "".
+ */
+export function apiBaseFor(pathname: string): string {
+  const segments = pathname.split("/");
+  if (/\.html?$/i.test(segments[segments.length - 1] ?? "")) segments.pop();
+  while (segments.length > 0 && segments[segments.length - 1] === "") segments.pop();
+  return segments.join("/");
+}
+
+export const apiBase = typeof window === "undefined" ? "" : apiBaseFor(window.location.pathname);
+
+export const api = createClient<paths>({ baseUrl: apiBase });
 api.use(withConnection);
 
 /** Unwrap an openapi-fetch result, throwing ApiError on failure. */

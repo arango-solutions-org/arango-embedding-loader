@@ -5,6 +5,8 @@ import { defineConfig } from "vitest/config";
 const target = process.env.VITE_API_TARGET ?? "http://localhost:8000";
 
 export default defineConfig({
+  // Relative asset URLs: on the Arango Platform the app is served under a path prefix.
+  base: "./",
   plugins: [react(), tailwindcss()],
   server: {
     port: Number(process.env.VITE_PORT ?? 5173),

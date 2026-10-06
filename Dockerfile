@@ -1,6 +1,10 @@
 # Single image: FastAPI backend + built React GUI.
 #   docker build -t arango-embedding-loader .                       # local + hosted providers
 #   docker build --build-arg EXTRAS=hosted -t ael:slim .             # no local models (no torch)
+#
+# BAKE_MODELS (comma-separated Hugging Face ids) saves sentence-transformers models into the
+# image at /opt/models, so they load with no network access. Defaults to PubMedBERT; pass
+# --build-arg BAKE_MODELS= to skip. Ignored when EXTRAS does not include "local".
 
 # ---- GUI -------------------------------------------------------------------------------
 FROM node:20-slim AS ui
@@ -27,6 +31,19 @@ COPY backend/pyproject.toml backend/uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -e; args=""; for e in $(echo "$EXTRAS" | tr ',' ' '); do args="$args --extra $e"; done; \
     uv sync --frozen --no-dev --no-install-project $args
+
+# Before the source copy, so code changes don't re-download the models.
+ARG BAKE_MODELS="NeuML/pubmedbert-base-embeddings"
+ENV ST_MODELS_DIR=/opt/models
+RUN set -e; mkdir -p "$ST_MODELS_DIR"; \
+    case ",$EXTRAS," in *,local,*) ;; *) BAKE_MODELS="" ;; esac; \
+    for m in $(echo "$BAKE_MODELS" | tr ',' ' '); do \
+        HF_HOME=/tmp/hf-bake python -c "import sys; from sentence_transformers import SentenceTransformer as S; S(sys.argv[1], device='cpu').save(sys.argv[2])" \
+            "$m" "$ST_MODELS_DIR/$m"; \
+    done; \
+    rm -rf /tmp/hf-bake; \
+    # save() writes weights 0600 as root; the app runs as the unprivileged loader user.
+    chmod -R a+rX "$ST_MODELS_DIR"
 COPY backend/ ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     set -e; args=""; for e in $(echo "$EXTRAS" | tr ',' ' '); do args="$args --extra $e"; done; \

@@ -105,3 +105,28 @@ def test_spec_validation_and_secrets():
     )
     assert spec.resolved_target == "content_body_embedding"
     assert spec.public_dict()["provider_options"] == {"x": 1}
+
+
+def test_baked_model_path(tmp_path, monkeypatch):
+    from app.providers.sentence_transformers_provider import baked_model_path
+
+    monkeypatch.setenv("ST_MODELS_DIR", str(tmp_path))
+    model_dir = tmp_path / "NeuML" / "pubmedbert-base-embeddings"
+    model_dir.mkdir(parents=True)
+    assert baked_model_path("NeuML/pubmedbert-base-embeddings") is None  # no modules.json yet
+
+    (model_dir / "modules.json").write_text("[]")
+    assert baked_model_path("NeuML/pubmedbert-base-embeddings") == str(model_dir)
+    assert baked_model_path("sentence-transformers/all-MiniLM-L6-v2") is None
+
+
+def test_baked_model_path_stays_inside_models_dir(tmp_path, monkeypatch):
+    from app.providers.sentence_transformers_provider import baked_model_path
+
+    root = tmp_path / "models"
+    root.mkdir()
+    outside = tmp_path / "evil"
+    outside.mkdir()
+    (outside / "modules.json").write_text("[]")
+    monkeypatch.setenv("ST_MODELS_DIR", str(root))
+    assert baked_model_path("../evil") is None

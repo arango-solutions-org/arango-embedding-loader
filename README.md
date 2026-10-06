@@ -39,6 +39,19 @@ The image includes sentence-transformers with CPU PyTorch, so local models such 
 out of the box. Downloaded models are cached in the `hf_cache` volume. For a smaller image without
 local models, set `APP_EXTRAS=hosted`.
 
+`NeuML/pubmedbert-base-embeddings` is baked into the image at `/opt/models`, so it loads with no
+network access. Use this on deployments that cannot reach the Hugging Face Hub, such as BYOC on the
+Arango Platform. Other models are still downloaded on first use. To bake a different set, pass a
+comma-separated list, or pass an empty value to bake none:
+
+```bash
+docker build --build-arg BAKE_MODELS=NeuML/pubmedbert-base-embeddings,BAAI/bge-base-en-v1.5 .
+docker build --build-arg BAKE_MODELS= .
+```
+
+A request that sets `provider_options.revision` bypasses the baked copy and fetches that revision
+from the Hub.
+
 ## Local development
 
 ```bash
@@ -123,6 +136,7 @@ All settings are environment variables (or `.env`). See [`.env.example`](.env.ex
 | `AWS_REGION` (plus the standard AWS credential chain) | – | Bedrock |
 | `OLLAMA_HOST` | `http://localhost:11434` | Ollama |
 | `ST_DEVICE`, `HF_HOME` | auto | Sentence-Transformers device and model cache |
+| `ST_MODELS_DIR` | `/opt/models` | Models baked in at build time, loaded from `<dir>/<org>/<name>` |
 | `EMBED_CONCURRENCY` / `DEFAULT_BATCH_SIZE` | `4` / `64` | Pipeline tuning |
 | `MAX_UPLOAD_MB` | `1024` | Upload limit |
 | `ALLOW_URL_SOURCES` / `URL_ALLOWED_HOSTS` | `true` / any | Restrict `POST /load/url` (for example `["storage.googleapis.com"]`) |

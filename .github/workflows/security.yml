@@ -1,0 +1,105 @@
+name: Security
+
+# Static analysis (Semgrep), dependency / secret / Dockerfile scanning (Trivy) and a
+# scan of the built image. Code scanning is not enabled on this repository, so results
+# go to the job log and to a downloadable report artifact rather than SARIF upload.
+#
+# Gate: Semgrep ERROR findings, and HIGH/CRITICAL vulnerabilities that have a fix
+# available. Everything else is reported but does not fail the build.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1" # Mondays: catch CVEs published since the last change
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # Pinned so a scanner release cannot change results or behaviour unannounced.
+  SEMGREP_IMAGE: semgrep/semgrep:1.178.0
+  TRIVY_IMAGE: aquasec/trivy:0.75.0
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Semgrep (p/default)
+        run: |
+          mkdir -p reports
+          docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD:/src" -w /src "$SEMGREP_IMAGE" \
+            semgrep scan --config p/default --metrics=off \
+              --json-output=reports/semgrep.json --text
+      - name: Fail on ERROR findings
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          results = json.load(open("reports/semgrep.json"))["results"]
+          errors = [r for r in results if r["extra"]["severity"] == "ERROR"]
+          print(f"{len(results)} finding(s), {len(errors)} at ERROR severity")
+          for r in errors:
+              print(f'  {r["path"]}:{r["start"]["line"]}  {r["check_id"]}')
+          sys.exit(1 if errors else 0)
+          EOF
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: semgrep-report
+          path: reports/
+
+  trivy-repo:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Trivy (lockfiles, secrets, Dockerfile) — full report
+        run: |
+          mkdir -p reports
+          docker run --rm -v "$PWD:/src" "$TRIVY_IMAGE" fs --quiet \
+            --scanners vuln,secret,misconfig --format table /src | tee reports/trivy-repo.txt
+      - name: Gate on fixable HIGH/CRITICAL vulnerabilities and HIGH/CRITICAL secrets
+        run: |
+          docker run --rm -v "$PWD:/src" "$TRIVY_IMAGE" fs --quiet \
+            --scanners vuln,secret,misconfig --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 /src
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: trivy-repo-report
+          path: reports/
+
+  trivy-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      # Same image as published, minus baked model weights: they add no packages to
+      # scan and would slow the secret scanner down.
+      - name: Build image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: ael-scan:${{ github.sha }}
+          build-args: BAKE_MODELS=
+          cache-from: type=gha,scope=security-scan
+          cache-to: type=gha,mode=max,scope=security-scan
+      - name: Trivy image — full report
+        run: |
+          mkdir -p reports
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image \
+            --quiet --scanners vuln,secret --format table "ael-scan:${{ github.sha }}" \
+            | tee reports/trivy-image.txt
+      - name: Gate on fixable HIGH/CRITICAL
+        run: |
+          docker run --rm -v /var/run/docker.sock:/var/run/docker.sock "$TRIVY_IMAGE" image \
+            --quiet --scanners vuln,secret --severity HIGH,CRITICAL --ignore-unfixed \
+            --exit-code 1 "ael-scan:${{ github.sha }}"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: trivy-image-report
+          path: reports/

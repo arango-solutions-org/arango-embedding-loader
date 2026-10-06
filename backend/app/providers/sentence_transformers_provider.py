@@ -31,12 +31,28 @@ class SentenceTransformersOptions(ProviderOptions):
     revision: str | None = Field(None, description="Model revision / commit on the Hub.")
 
 
+def baked_model_path(model: str) -> str | None:
+    """Directory of a model saved into the image at build time (``BAKE_MODELS``), if any.
+
+    Models live at ``$ST_MODELS_DIR/<org>/<name>``. Loading from that path needs no network,
+    which matters on deployments that cannot reach the Hugging Face Hub.
+    """
+    root = os.getenv("ST_MODELS_DIR", "/opt/models")
+    path = os.path.join(root, model)
+    if os.path.realpath(path).startswith(os.path.realpath(root) + os.sep) and os.path.isfile(
+        os.path.join(path, "modules.json")
+    ):
+        return path
+    return None
+
+
 class SentenceTransformersProvider(EmbeddingProvider):
     name = "sentence_transformers"
     label = "Sentence-Transformers (local)"
     description = (
         "Runs any Hugging Face sentence-transformers model locally, e.g. "
-        "NeuML/pubmedbert-base-embeddings. Models are downloaded on first use."
+        "NeuML/pubmedbert-base-embeddings. Models baked into the image are loaded from disk; "
+        "others are downloaded on first use."
     )
     Options = SentenceTransformersOptions
     requires = ("sentence_transformers",)
@@ -69,11 +85,13 @@ class SentenceTransformersProvider(EmbeddingProvider):
             if loaded is None:
                 from sentence_transformers import SentenceTransformer
 
+                # A baked copy wins unless a specific Hub revision was requested.
+                baked = None if options.revision else baked_model_path(model)
                 loaded = SentenceTransformer(
-                    model,
+                    baked or model,
                     device=options.device,
                     trust_remote_code=options.trust_remote_code,
-                    revision=options.revision,
+                    revision=None if baked else options.revision,
                 )
                 self._models[key] = loaded
                 self._encode_locks[id(loaded)] = threading.Lock()

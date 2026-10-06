@@ -39,28 +39,29 @@ The image includes sentence-transformers with CPU PyTorch, so local models such 
 out of the box. Downloaded models are cached in the `hf_cache` volume. For a smaller image without
 local models, set `APP_EXTRAS=hosted`.
 
-`NeuML/pubmedbert-base-embeddings` is baked into the image at `/opt/models`, so it loads with no
-network access. Use this on deployments that cannot reach the Hugging Face Hub, such as BYOC on the
-Arango Platform. Other models are still downloaded on first use. To bake a different set, pass a
-comma-separated list, or pass an empty value to bake none:
+### Image variants
+
+CI publishes three variants of the image to GHCR:
+
+| Tags | Contents | Use when |
+|---|---|---|
+| `latest`, `<version>`, `<major>.<minor>`, `sha-<sha>` | Local and hosted providers. No baked models: local models download from the Hugging Face Hub on first use. | The deployment can reach the Hub, or only uses hosted providers. |
+| `latest-pubmedbert`, `<version>-pubmedbert`, `sha-<sha>-pubmedbert` | As `latest`, with `NeuML/pubmedbert-base-embeddings` baked in at `/opt/models`. | The deployment cannot reach the Hub (air-gapped or egress-restricted, e.g. BYOC on the Arango Platform) and needs PubMedBERT. |
+| `latest-slim`, `<version>-slim`, `sha-<sha>-slim` | Hosted providers only (OpenAI-compatible, Voyage, Cohere, Bedrock, Ollama). No PyTorch, no local models. | Embeddings come from an API, and image size matters. |
+
+On a deployment without Hub access, use a tag with the model baked in. On `latest`, a local model
+fails at the first embedding because it tries to download.
+
+Baked models load from disk with no network access. Other local models still download on first
+use. To bake models into your own build, pass a comma-separated list of Hugging Face ids:
 
 ```bash
+docker build --build-arg BAKE_MODELS=NeuML/pubmedbert-base-embeddings .
 docker build --build-arg BAKE_MODELS=NeuML/pubmedbert-base-embeddings,BAAI/bge-base-en-v1.5 .
-docker build --build-arg BAKE_MODELS= .
 ```
 
 A request that sets `provider_options.revision` bypasses the baked copy and fetches that revision
 from the Hub.
-
-CI publishes two images to GHCR:
-
-| Tag | Contents |
-|---|---|
-| `latest`, `<version>`, `sha-<sha>` | PubMedBERT baked in. Use this one where the Hub is unreachable. |
-| `latest-nomodels`, `<version>-nomodels`, `sha-<sha>-nomodels` | No baked models (about 440 MB smaller). Models download on first use. |
-
-Pushes to a non-default branch that CI builds are tagged with the branch name, for example
-`feat-baked-models` and `feat-baked-models-nomodels`.
 
 Sentence-Transformers returns unnormalized vectors by default. To compare against unit-length
 vectors produced elsewhere, enable **Normalize Embeddings** under *Sentence-Transformers (local)
@@ -74,8 +75,8 @@ Override it with `make CONTAINER=podman …`.
 
 | Target | |
 |---|---|
-| `make build` / `build-nomodels` / `build-slim` | Baked image / no baked models / hosted providers only |
-| `make smoke-offline` | Embed one text in the baked image with `--network none` |
+| `make build` / `build-pubmedbert` / `build-slim` | `latest` / `latest-pubmedbert` / `latest-slim` equivalents. Bake another model with `make build-pubmedbert BAKED_MODEL=<hf-id> BAKED_SUFFIX=<suffix>` |
+| `make smoke-offline` | Embed one text in the baked-model image with `--network none` |
 | `make check` | Lint, type-check, unit tests and frontend checks |
 | `make test-integration` | Start a throw-away ArangoDB 3.12, run the integration tests, remove it |
 

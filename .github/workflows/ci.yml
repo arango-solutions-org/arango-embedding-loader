@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/baked-models]
     tags: ["v*"]
   pull_request:
 
@@ -26,6 +26,29 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pytest -m "not integration and not local"
 
+  integration:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --extra hosted
+      # Started by hand rather than as a service container: the vector index needs
+      # --experimental-vector-index, and service containers cannot take a command.
+      - name: Start ArangoDB
+        run: |
+          docker run -d --name arangodb -p 8530:8529 -e ARANGO_ROOT_PASSWORD=test arangodb:3.12 \
+            arangod --server.endpoint tcp://0.0.0.0:8529 --experimental-vector-index
+          until curl -sf -u root:test http://127.0.0.1:8530/_api/version; do sleep 2; done
+      - run: uv run pytest -m integration
+        env:
+          ARANGO_TEST_ENDPOINT: http://127.0.0.1:8530
+          ARANGO_TEST_PASSWORD: test
+
   frontend:
     runs-on: ubuntu-latest
     defaults:
@@ -43,12 +66,24 @@ jobs:
       - run: npm test
 
   publish:
-    needs: [backend, frontend]
+    needs: [backend, integration, frontend]
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Default image: PubMedBERT baked in, runs where the Hugging Face Hub is unreachable.
+          - variant: baked
+            suffix: ""
+            bake_models: NeuML/pubmedbert-base-embeddings
+          # Same image without baked models; models download on first use.
+          - variant: nomodels
+            suffix: "-nomodels"
+            bake_models: ""
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -61,16 +96,43 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
+            suffix=${{ matrix.suffix }},onlatest=true
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
+            type=ref,event=branch,enable={{is_not_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha
-      - uses: docker/build-push-action@v6
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: ael-ci:${{ matrix.variant }}
+          build-args: BAKE_MODELS=${{ matrix.bake_models }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+      - name: Offline smoke test (no network)
+        if: matrix.bake_models != ''
+        run: |
+          docker run --rm --network none ael-ci:${{ matrix.variant }} python -c "
+          import asyncio
+          from app.providers.registry import get_provider
+          from app.providers.sentence_transformers_provider import baked_model_path
+          m = 'NeuML/pubmedbert-base-embeddings'
+          assert baked_model_path(m), 'model not baked'
+          p = get_provider('sentence_transformers')
+          v = asyncio.run(p.embed(['offline smoke test'], model=m, options=p.parse_options(None)))
+          assert len(v[0]) == 768, len(v[0])
+          print('ok', m, len(v[0]), 'dims with no network')"
+      - name: Push
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          build-args: BAKE_MODELS=${{ matrix.bake_models }}
+          cache-from: type=gha,scope=${{ matrix.variant }}

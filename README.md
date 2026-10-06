@@ -52,6 +52,33 @@ docker build --build-arg BAKE_MODELS= .
 A request that sets `provider_options.revision` bypasses the baked copy and fetches that revision
 from the Hub.
 
+CI publishes two images to GHCR:
+
+| Tag | Contents |
+|---|---|
+| `latest`, `<version>`, `sha-<sha>` | PubMedBERT baked in. Use this one where the Hub is unreachable. |
+| `latest-nomodels`, `<version>-nomodels`, `sha-<sha>-nomodels` | No baked models (about 440 MB smaller). Models download on first use. |
+
+Pushes to a non-default branch that CI builds are tagged with the branch name, for example
+`feat-baked-models` and `feat-baked-models-nomodels`.
+
+Sentence-Transformers returns unnormalized vectors by default. To compare against unit-length
+vectors produced elsewhere, enable **Normalize Embeddings** under *Sentence-Transformers (local)
+options* in the GUI, or set `"provider_options": {"normalize_embeddings": true}` in the spec or
+profile.
+
+### Make targets
+
+The Makefile works with Docker or Podman. It uses `docker` when installed, otherwise `podman`.
+Override it with `make CONTAINER=podman …`.
+
+| Target | |
+|---|---|
+| `make build` / `build-nomodels` / `build-slim` | Baked image / no baked models / hosted providers only |
+| `make smoke-offline` | Embed one text in the baked image with `--network none` |
+| `make check` | Lint, type-check, unit tests and frontend checks |
+| `make test-integration` | Start a throw-away ArangoDB 3.12, run the integration tests, remove it |
+
 ## Local development
 
 ```bash

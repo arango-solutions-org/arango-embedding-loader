@@ -17,7 +17,7 @@ info:
     \ `X-Arango-Username`, `X-Arango-Password`.\n"
   license:
     name: Apache-2.0
-  version: 0.1.0
+  version: 0.0.6
 paths:
   /api/v1/health:
     get:

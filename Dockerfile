@@ -1,10 +1,11 @@
 # Single image: FastAPI backend + built React GUI.
 #   docker build -t arango-embedding-loader .                       # local + hosted providers
-#   docker build --build-arg EXTRAS=hosted -t ael:slim .             # no local models (no torch)
+#   docker build --build-arg EXTRAS=hosted -t ael:slim .             # hosted providers only (no torch)
+#   docker build --build-arg BAKE_MODELS=NeuML/pubmedbert-base-embeddings -t ael:pubmedbert .
 #
-# BAKE_MODELS (comma-separated Hugging Face ids) saves sentence-transformers models into the
-# image at /opt/models, so they load with no network access. Defaults to PubMedBERT; pass
-# --build-arg BAKE_MODELS= to skip. Ignored when EXTRAS does not include "local".
+# BAKE_MODELS (comma-separated Hugging Face ids, default none) saves sentence-transformers
+# models into the image at /opt/models, so they load with no network access. Use it for
+# deployments that cannot reach the Hugging Face Hub. Ignored when EXTRAS lacks "local".
 
 # ---- GUI -------------------------------------------------------------------------------
 FROM node:20-slim AS ui
@@ -33,7 +34,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev --no-install-project $args
 
 # Before the source copy, so code changes don't re-download the models.
-ARG BAKE_MODELS="NeuML/pubmedbert-base-embeddings"
+ARG BAKE_MODELS=""
 ENV ST_MODELS_DIR=/opt/models
 RUN set -e; mkdir -p "$ST_MODELS_DIR"; \
     case ",$EXTRAS," in *,local,*) ;; *) BAKE_MODELS="" ;; esac; \
@@ -50,8 +51,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-dev $args
 COPY --from=ui /src/frontend/dist /app/static
 
-RUN useradd --create-home --uid 10001 loader && mkdir -p /data/hf && chown -R loader /data
-USER loader
+# The app runs from /opt/venv, which has no pip; the base image's own pip is unused at runtime.
+RUN /usr/local/bin/python3 -m pip uninstall -y pip \
+    && useradd --create-home --uid 10001 loader && mkdir -p /data/hf && chown -R loader /data
+# Numeric, so Kubernetes runAsNonRoot can verify the user without a runAsUser override.
+USER 10001
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=3s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"

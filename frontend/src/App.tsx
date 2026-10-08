@@ -2,7 +2,7 @@ import { BookOpen, Database, ListChecks, Upload } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { apiBase } from "./api/client";
-import { ConnectionPanel, ConnectionStatus } from "./components/ConnectionPanel";
+import { DatabasePicker } from "./components/DatabasePicker";
 import { Collections } from "./pages/Collections";
 import { Jobs } from "./pages/Jobs";
 import { LoadWizard } from "./pages/LoadWizard";
@@ -54,7 +54,6 @@ function NavItem({
 
 export default function App() {
   const [route, setRoute] = useHashRoute();
-  const [showConnection, setShowConnection] = useState(false);
 
   return (
     <div className="flex h-full">
@@ -77,7 +76,7 @@ export default function App() {
           <span className="text-sm font-semibold">
             Arango <span className="text-arango-brand">Embedding Loader</span>
           </span>
-          <ConnectionStatus onOpen={() => setShowConnection(true)} />
+          <DatabasePicker />
         </header>
         <main className="flex-1 overflow-y-auto px-6 py-6">
           <div className="mx-auto max-w-6xl">
@@ -87,7 +86,6 @@ export default function App() {
           </div>
         </main>
       </div>
-      {showConnection && <ConnectionPanel onClose={() => setShowConnection(false)} />}
     </div>
   );
 }

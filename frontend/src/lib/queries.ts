@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 
 import { api, unwrap } from "../api/client";
-import { connectionKey, useConnection } from "./connection";
+import { useDatabase } from "./database";
 
 export function useProviders() {
   return useQuery({
@@ -30,27 +30,36 @@ export function useModels(provider: string) {
 }
 
 export function useConnectionInfo() {
-  const conn = useConnection();
+  const database = useDatabase();
   return useQuery({
-    queryKey: ["connection", connectionKey(conn)],
+    queryKey: ["connection", database],
     queryFn: () => unwrap(api.GET("/api/v1/connection")),
     staleTime: 30_000,
   });
 }
 
-export function useCollections() {
-  const conn = useConnection();
+export function useDatabases() {
   return useQuery({
-    queryKey: ["collections", connectionKey(conn)],
+    queryKey: ["databases"],
+    queryFn: () => unwrap(api.GET("/api/v1/databases")),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useCollections() {
+  const database = useDatabase();
+  return useQuery({
+    queryKey: ["collections", database],
     queryFn: () => unwrap(api.GET("/api/v1/collections", { params: { query: {} } })),
     retry: false,
   });
 }
 
 export function useProfileStatus(collection: string | null) {
-  const conn = useConnection();
+  const database = useDatabase();
   return useQuery({
-    queryKey: ["profile", connectionKey(conn), collection],
+    queryKey: ["profile", database, collection],
     queryFn: () =>
       unwrap(
         api.GET("/api/v1/collections/{name}/profile", {

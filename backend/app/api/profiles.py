@@ -5,6 +5,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Path
 
+from app.arango import background
+from app.config import get_settings
 from app.deps import ConnectionDep, DbDep
 from app.errors import AppError
 from app.ingest.text import split_path
@@ -79,7 +81,7 @@ async def put_profile(
 
     await asyncio.to_thread(work)
     if body.auto_watch:
-        watcher_manager.start(conn, name)
+        watcher_manager.start(background(conn, get_settings()), name)
     else:
         watcher_manager.stop(conn, name)
     return await get_profile_status(name, db, conn)
@@ -138,7 +140,7 @@ async def start_watcher(name: CollectionPath, db: DbDep, conn: ConnectionDep) ->
             | {"auto_watch": True}
         )
         await asyncio.to_thread(profile_store.save_profile, db, name, config)
-    return watcher_manager.start(conn, name)
+    return watcher_manager.start(background(conn, get_settings()), name)
 
 
 @router.post(

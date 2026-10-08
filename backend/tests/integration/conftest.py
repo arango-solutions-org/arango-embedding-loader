@@ -9,9 +9,11 @@ import os
 import uuid
 from collections.abc import Iterator
 
+import httpx
 import pytest
 from arango import ArangoClient
 from fastapi.testclient import TestClient
+from pydantic import SecretStr
 
 from app.config import get_settings
 from app.main import create_app
@@ -46,13 +48,28 @@ def db(arango_settings, test_db):
 
 
 @pytest.fixture
-def client(arango_settings, test_db) -> Iterator[TestClient]:
+def client(arango_settings, test_db, monkeypatch) -> Iterator[TestClient]:
+    """The app signing in with the server's credentials (off the platform)."""
     endpoint, user, password = arango_settings
-    headers = {
-        "X-Arango-Endpoint": endpoint,
-        "X-Arango-Database": test_db,
-        "X-Arango-Username": user,
-        "X-Arango-Password": password,
-    }
+    settings = get_settings()
+    monkeypatch.setattr(settings, "arango_endpoint", endpoint)
+    monkeypatch.setattr(settings, "arango_username", user)
+    monkeypatch.setattr(settings, "arango_password", SecretStr(password))
+    with TestClient(create_app(), headers={"X-Arango-Database": test_db}) as c:
+        yield c
+
+
+@pytest.fixture
+def platform_client(arango_settings, test_db, monkeypatch) -> Iterator[TestClient]:
+    """The app as the platform gateway calls it: the user's JWT in ``Authorization`` and no
+    server credentials."""
+    endpoint, user, password = arango_settings
+    jwt = httpx.post(
+        f"{endpoint}/_open/auth", json={"username": user, "password": password}
+    ).json()["jwt"]
+    settings = get_settings()
+    monkeypatch.setattr(settings, "arango_endpoint", endpoint)
+    monkeypatch.setattr(settings, "arango_password", SecretStr("wrong"))
+    headers = {"Authorization": f"bearer {jwt}", "X-Arango-Database": test_db}
     with TestClient(create_app(), headers=headers) as c:
         yield c

@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Arango Embedding Loader API",
-    "description": "\nLoad NoSQL documents (JSON, JSONL/NDJSON, CSV - optionally gzipped - or a JSON body) into an\nArangoDB collection, **embedding the field(s) you label** with the embedding provider of your\nchoice and storing each vector **inside the same document**.\n\n### Concepts\n* **Embedding spec** - `{source_field | template, target_field, provider | preset, model}`.\n  One or more per load.\n* **Providers** - pluggable: Sentence-Transformers (local Hugging Face models such as\n  `NeuML/pubmedbert-base-embeddings`), OpenAI (and compatible servers), Voyage AI, Cohere,\n  Amazon Bedrock, Ollama, plus any third-party plugin. See `GET /providers`.\n* **Profiles** - attach an embedding spec to a collection once (`PUT /collections/{name}/profile`);\n  every later load into it is embedded automatically, and an optional watcher embeds documents\n  inserted by any other client.\n* **Jobs** - loads run as background jobs. Pass `?wait=true` for a synchronous response, or\n  follow progress with `GET /jobs/{id}` / `GET /jobs/{id}/events` (SSE).\n\n### Connection\nThe server's environment (`ARANGO_ENDPOINT`, `ARANGO_DATABASE`, `ARANGO_USERNAME`,\n`ARANGO_PASSWORD`) is the default. Override it per request with the headers\n`X-Arango-Endpoint`, `X-Arango-Database`, `X-Arango-Username`, `X-Arango-Password`.\n",
+    "description": "\nLoad NoSQL documents (JSON, JSONL/NDJSON, CSV - optionally gzipped - or a JSON body) into an\nArangoDB collection, **embedding the field(s) you label** with the embedding provider of your\nchoice and storing each vector **inside the same document**.\n\n### Concepts\n* **Embedding spec** - `{source_field | template, target_field, provider | preset, model}`.\n  One or more per load.\n* **Providers** - pluggable: Sentence-Transformers (local Hugging Face models such as\n  `NeuML/pubmedbert-base-embeddings`), OpenAI (and compatible servers), Voyage AI, Cohere,\n  Amazon Bedrock, Ollama, plus any third-party plugin. See `GET /providers`.\n* **Profiles** - attach an embedding spec to a collection once (`PUT /collections/{name}/profile`);\n  every later load into it is embedded automatically, and an optional watcher embeds documents\n  inserted by any other client.\n* **Jobs** - loads run as background jobs. Pass `?wait=true` for a synchronous response, or\n  follow progress with `GET /jobs/{id}` / `GET /jobs/{id}/events` (SSE).\n\n### Connection\nOn the Arango Platform the app connects as the signed-in user: the gateway forwards their token\nand the database endpoint is injected, so there is nothing to configure. Elsewhere the server\nsigns in with `ARANGO_USERNAME` / `ARANGO_PASSWORD`. Choose the database per request with the\n`X-Arango-Database` header (default `ARANGO_DATABASE`); `GET /databases` lists the ones you can\naccess.\n",
     "license": {
       "name": "Apache-2.0"
     },
@@ -36,27 +36,9 @@
           "Connection"
         ],
         "summary": "Test the ArangoDB connection",
-        "description": "Connects with the server defaults or the `X-Arango-*` header overrides and reports the server version. Never returns the password.",
+        "description": "Connects as the signed-in user (on the Arango Platform) or with the server's credentials, to the `X-Arango-Database` database, and reports the server version.",
         "operationId": "test_connection_api_v1_connection_get",
         "parameters": [
-          {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
           {
             "name": "x-arango-database",
             "in": "header",
@@ -70,46 +52,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -119,6 +65,111 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/ConnectionInfo"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or provider configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "ArangoDB rejected the credentials.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Connection override not permitted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Resource not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "ArangoDB or embedding provider failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/databases": {
+      "get": {
+        "tags": [
+          "Connection"
+        ],
+        "summary": "List the databases you can access",
+        "operationId": "list_databases_api_v1_databases_get",
+        "parameters": [
+          {
+            "name": "x-arango-database",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The ArangoDB database to use (default: the server's).",
+              "title": "X-Arango-Database"
+            },
+            "description": "The ArangoDB database to use (default: the server's)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "title": "Response List Databases Api V1 Databases Get"
                 }
               }
             }
@@ -207,24 +258,6 @@
             "description": "Include document counts."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -237,46 +270,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -364,24 +361,6 @@
         "operationId": "create_collection_api_v1_collections_post",
         "parameters": [
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -394,46 +373,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -550,24 +493,6 @@
             }
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -580,46 +505,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -714,24 +603,6 @@
             }
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -744,46 +615,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -884,24 +719,6 @@
             }
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -914,46 +731,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -1073,24 +854,6 @@
             "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -1103,46 +866,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -1248,24 +975,6 @@
         "operationId": "list_profiles_api_v1_profiles_get",
         "parameters": [
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -1278,46 +987,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -1422,24 +1095,6 @@
             "description": "Collection name."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -1452,46 +1107,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -1599,24 +1218,6 @@
             "description": "Collection name."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -1629,46 +1230,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -1766,24 +1331,6 @@
             "description": "Collection name."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -1796,46 +1343,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -1928,24 +1439,6 @@
             "description": "Collection name."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -1958,46 +1451,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -2097,24 +1554,6 @@
             "description": "Collection name."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -2127,46 +1566,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "responses": {
@@ -2719,24 +2122,6 @@
             "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -2749,46 +2134,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -2925,24 +2274,6 @@
             "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -2955,46 +2286,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -3113,24 +2408,6 @@
             "description": "Block until the job finishes and return the final job (200). Otherwise return the queued job immediately (202) and track it with `GET /jobs/{id}` or SSE."
           },
           {
-            "name": "x-arango-endpoint",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`.",
-              "title": "X-Arango-Endpoint"
-            },
-            "description": "Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
-          },
-          {
             "name": "x-arango-database",
             "in": "header",
             "required": false,
@@ -3143,46 +2420,10 @@
                   "type": "null"
                 }
               ],
-              "description": "Override the ArangoDB database name.",
+              "description": "The ArangoDB database to use (default: the server's).",
               "title": "X-Arango-Database"
             },
-            "description": "Override the ArangoDB database name."
-          },
-          {
-            "name": "x-arango-username",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB username.",
-              "title": "X-Arango-Username"
-            },
-            "description": "Override the ArangoDB username."
-          },
-          {
-            "name": "x-arango-password",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "description": "Override the ArangoDB password.",
-              "title": "X-Arango-Password"
-            },
-            "description": "Override the ArangoDB password."
+            "description": "The ArangoDB database to use (default: the server's)."
           }
         ],
         "requestBody": {
@@ -3848,6 +3089,18 @@
             "type": "string",
             "title": "Database"
           },
+          "user": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "User",
+            "description": "The ArangoDB user the app acts as."
+          },
           "connection": {
             "additionalProperties": true,
             "type": "object",
@@ -3882,6 +3135,7 @@
           "connected",
           "server_version",
           "database",
+          "user",
           "connection",
           "vector_index_supported",
           "error"

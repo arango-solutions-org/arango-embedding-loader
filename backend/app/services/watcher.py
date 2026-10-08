@@ -87,7 +87,8 @@ class WatcherManager:
 
     @staticmethod
     def _key(conn: ArangoConnection, collection: str) -> tuple[str, str]:
-        return conn.cache_key, collection
+        # One watcher per collection, whoever started it (credentials differ per user).
+        return f"{conn.endpoint}|{conn.database}", collection
 
     def state(self, conn: ArangoConnection, collection: str) -> WatcherState:
         key = self._key(conn, collection)

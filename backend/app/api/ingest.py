@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.api.common import WaitQuery, job_response
 from app.config import get_settings
-from app.deps import ConnectionDep, DbDep
+from app.deps import BackgroundDbDep, ConnectionDep
 from app.errors import AppError
 from app.ingest.fieldpaths import detect_field_paths
 from app.ingest.parsers import (
@@ -148,7 +148,7 @@ async def preview(
 )
 async def load_documents(
     body: LoadDocumentsRequest,
-    db: DbDep,
+    db: BackgroundDbDep,
     conn: ConnectionDep,
     response: Response,
     wait: WaitQuery = False,
@@ -195,7 +195,7 @@ def _parse_config(raw: str | None, collection: str | None) -> FileLoadOptions:
     responses={202: {"model": Job, "description": "Job accepted (when `wait=false`)."}},
 )
 async def load_file(
-    db: DbDep,
+    db: BackgroundDbDep,
     conn: ConnectionDep,
     response: Response,
     file: Annotated[UploadFile, File(description="JSON, JSONL/NDJSON or CSV file (.gz ok).")],
@@ -247,7 +247,7 @@ async def load_file(
 )
 async def load_url(
     body: LoadUrlRequest,
-    db: DbDep,
+    db: BackgroundDbDep,
     conn: ConnectionDep,
     response: Response,
     wait: WaitQuery = False,

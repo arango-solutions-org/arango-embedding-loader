@@ -6,6 +6,32 @@ This file follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 Versions in the `0.0.x` series are the initial development history of the application.
 The Python package, the web UI, and the OpenAPI document are at `0.0.6`.
 
+## [Unreleased]
+
+On the Arango Platform the app connects as the signed-in user. Users no longer enter a password.
+
+### Changed
+
+- Requests use the token the platform gateway forwards for the signed-in user (`Authorization: bearer`), with that user's ArangoDB permissions. Without one, platform requests get `401 unauthenticated`.
+- Load jobs, re-embed jobs and watchers get renewable tokens for the same user from the injected integration sidecar, so they keep running after the request's token expires. Watchers started at boot run as `ARANGO_SERVICE_USER` (default `root`).
+- On the platform, TLS is verified against the injected CA (`ARANGO_DEPLOYMENT_CA`) instead of being turned off.
+- Off the platform the server exchanges `ARANGO_USERNAME` / `ARANGO_PASSWORD` for a JWT. Every connection now authenticates with a token.
+- There is one watcher per collection, whoever started it.
+- The header shows the signed-in user and a database picker. The choice is remembered in the browser.
+
+### Added
+
+- `GET /api/v1/databases` lists the databases the user can access.
+
+### Fixed
+
+- File preview and file upload now work when the app is served under a platform path prefix.
+
+### Removed
+
+- The "ArangoDB connection" panel, and the `X-Arango-Endpoint`, `X-Arango-Username` and `X-Arango-Password` request headers. `X-Arango-Database` remains.
+- The `ALLOW_CONNECTION_OVERRIDE` setting.
+
 ## [0.0.6] - 2026-10-06
 
 Published image tags are split into three variants. `latest` is the plain image again.

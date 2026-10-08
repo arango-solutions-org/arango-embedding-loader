@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Response
 
 from app.api.common import WaitQuery, job_response
 from app.config import get_settings
-from app.deps import ConnectionDep, DbDep
+from app.deps import BackgroundDbDep, ConnectionDep, DbDep
 from app.errors import AppError
 from app.ingest.fieldpaths import detect_field_paths
 from app.models.collections import (
@@ -159,7 +159,7 @@ async def create_vector_index(name: str, body: VectorIndexRequest, db: DbDep) ->
 async def reembed_collection(
     name: str,
     body: ReembedRequest,
-    db: DbDep,
+    db: BackgroundDbDep,
     conn: ConnectionDep,
     response: Response,
     wait: WaitQuery = False,

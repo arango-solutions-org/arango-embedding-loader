@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.api import collections, connection, ingest, jobs, profiles, providers, system
-from app.arango import ArangoConnection
+from app.arango import default_connection
 from app.config import get_settings
 from app.errors import install_error_handlers
 from app.services.jobs import job_manager
@@ -42,9 +42,11 @@ choice and storing each vector **inside the same document**.
   follow progress with `GET /jobs/{id}` / `GET /jobs/{id}/events` (SSE).
 
 ### Connection
-The server's environment (`ARANGO_ENDPOINT`, `ARANGO_DATABASE`, `ARANGO_USERNAME`,
-`ARANGO_PASSWORD`) is the default. Override it per request with the headers
-`X-Arango-Endpoint`, `X-Arango-Database`, `X-Arango-Username`, `X-Arango-Password`.
+On the Arango Platform the app connects as the signed-in user: the gateway forwards their token
+and the database endpoint is injected, so there is nothing to configure. Elsewhere the server
+signs in with `ARANGO_USERNAME` / `ARANGO_PASSWORD`. Choose the database per request with the
+`X-Arango-Database` header (default `ARANGO_DATABASE`); `GET /databases` lists the ones you can
+access.
 """
 
 TAGS = [
@@ -63,7 +65,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     if settings.start_watchers_on_startup:
         try:
-            started = await watcher_manager.start_all(ArangoConnection.from_settings(settings))
+            started = await watcher_manager.start_all(default_connection(settings))
             if started:
                 log.info("Started %d auto-embed watcher(s)", started)
         except Exception as exc:  # noqa: BLE001 - DB may not be reachable yet

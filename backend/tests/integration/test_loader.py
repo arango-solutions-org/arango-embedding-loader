@@ -155,3 +155,62 @@ def test_pubmedbert_customer_scenario(client, db):
         str(json.loads(SAMPLE.read_text().splitlines()[0])["id"])
     )
     assert doc["embedding_meta"]["model"] == "NeuML/pubmedbert-base-embeddings"
+
+
+def test_platform_token_from_gateway(platform_client, test_db, db):
+    """Signed in with the forwarded JWT only: the server's own password is wrong."""
+    info = platform_client.get("/api/v1/connection").json()
+    assert info["connected"], info
+    assert info["database"] == test_db and info["user"] == "root"
+    assert info["connection"]["auth"] == "platform"
+    assert test_db in platform_client.get("/api/v1/databases").json()
+
+    body = {
+        "collection": "gateway_docs",
+        "key_field": "id",
+        "embeddings": [FAKE],
+        "documents": [{"id": "a", "text": "hello"}],
+    }
+    job = platform_client.post("/api/v1/load?wait=true", json=body).json()
+    assert job["status"] == "succeeded", job
+    assert len(db.collection("gateway_docs").get("a")["embedding"]) == 384
+
+
+def test_bad_token_rejected(platform_client):
+    r = platform_client.get(
+        "/api/v1/collections", headers={"Authorization": "bearer not-a-real-token"}
+    )
+    assert r.status_code == 401
+
+
+def test_platform_user_without_system_access(arango_settings, test_db, monkeypatch):
+    """A typical platform user: access to one database only, signed in by the gateway."""
+    import uuid
+
+    import httpx
+    from arango import ArangoClient
+    from fastapi.testclient import TestClient
+    from pydantic import SecretStr
+
+    from app.config import get_settings
+    from app.main import create_app
+
+    endpoint, root, password = arango_settings
+    sys_db = ArangoClient(hosts=endpoint).db("_system", username=root, password=password)
+    user = f"ael_user_{uuid.uuid4().hex[:6]}"
+    sys_db.create_user(user, "pw")
+    try:
+        sys_db.update_permission(user, "rw", test_db)
+        jwt = httpx.post(
+            f"{endpoint}/_open/auth", json={"username": user, "password": "pw"}
+        ).json()["jwt"]
+        settings = get_settings()
+        monkeypatch.setattr(settings, "arango_endpoint", endpoint)
+        monkeypatch.setattr(settings, "arango_password", SecretStr("wrong"))
+        with TestClient(create_app(), headers={"Authorization": f"bearer {jwt}"}) as c:
+            assert c.get("/api/v1/databases").json() == [test_db]
+            assert not c.get("/api/v1/connection").json()["connected"]  # _system
+            info = c.get("/api/v1/connection", headers={"X-Arango-Database": test_db}).json()
+            assert info["connected"] and info["user"] == user
+    finally:
+        sys_db.delete_user(user, ignore_missing=True)

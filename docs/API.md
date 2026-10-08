@@ -17,17 +17,25 @@ cd backend && uv run python ../scripts/export_openapi.py && cd ../frontend && np
 
 ## Connection
 
-The server's `.env` provides the default ArangoDB connection. Any request can override it with
-these headers:
+**On the Arango Platform (BYOC)** there is nothing to configure. The operator injects the
+database endpoint (`ARANGO_DEPLOYMENT_ENDPOINT`) and its CA (`ARANGO_DEPLOYMENT_CA`), and the
+platform gateway signs the user in and forwards their token as `Authorization: bearer <jwt>`.
+Every request acts as that user, with their ArangoDB permissions. A request without a token gets
+`401 unauthenticated`.
+
+Load jobs and watchers outlive the request and its token, so the app asks the injected
+integration sidecar for renewable tokens for the same user. Watchers started when the server
+boots run as `ARANGO_SERVICE_USER` (default `root`).
+
+**Elsewhere** the server signs in with `ARANGO_USERNAME` / `ARANGO_PASSWORD` from its `.env`.
+
+Choose the database per request with this header:
 
 | Header | Example |
 |---|---|
-| `X-Arango-Endpoint` | `https://abc123.arangodb.cloud:8529` |
-| `X-Arango-Database` | `research` |
-| `X-Arango-Username` | `loader` |
-| `X-Arango-Password` | `…` |
+| `X-Arango-Database` | `research` (default: `ARANGO_DATABASE`) |
 
-Set `ALLOW_CONNECTION_OVERRIDE=false` to disable overrides.
+`GET /databases` lists the databases the user can access.
 
 ## Endpoints
 
@@ -36,7 +44,8 @@ All paths are prefixed with `/api/v1`.
 | Tag | Method | Path | Purpose |
 |---|---|---|---|
 | System | GET | `/health` | Liveness and version |
-| Connection | GET | `/connection` | Test the connection; returns the server version and whether vector indexes are supported |
+| Connection | GET | `/connection` | Test the connection; returns the user, server version and whether vector indexes are supported |
+| Connection | GET | `/databases` | Databases the user can access |
 | Collections | GET | `/collections` | List collections with counts and profile flag |
 | | POST | `/collections` | Create a collection |
 | | GET | `/collections/{name}/sample` | Sample documents and detect field paths |

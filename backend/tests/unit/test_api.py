@@ -23,8 +23,10 @@ def test_health_and_openapi():
         "/api/v1/jobs/{job_id}/events",
     ):
         assert path in paths, path
-    params = {p["name"] for p in paths["/api/v1/collections"]["get"]["parameters"]}
-    assert {"x-arango-endpoint", "x-arango-password"} <= {p.lower() for p in params}
+    assert "/api/v1/databases" in paths
+    params = {p["name"].lower() for p in paths["/api/v1/collections"]["get"]["parameters"]}
+    assert "x-arango-database" in params
+    assert not params & {"x-arango-endpoint", "x-arango-username", "x-arango-password"}
 
 
 def test_providers_and_presets():
@@ -53,10 +55,9 @@ def test_preview_upload():
     assert body["format"] == "jsonl" and body["estimated_total"] == 1
 
 
-def test_override_forbidden(monkeypatch):
+def test_platform_requires_gateway_token(monkeypatch):
     from app.config import get_settings
 
-    monkeypatch.setattr(get_settings(), "allow_connection_override", False)
-    r = client().get("/api/v1/collections", headers={"X-Arango-Database": "other"})
-    assert r.status_code == 403
-    assert r.json()["error"] == "override_disabled"
+    monkeypatch.setattr(get_settings(), "integration_http_address", "http://127.0.0.1:9203")
+    r = client().get("/api/v1/collections")
+    assert r.status_code == 401 and r.json()["error"] == "unauthenticated"

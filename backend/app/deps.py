@@ -7,38 +7,33 @@ from typing import Annotated
 from arango.database import StandardDatabase
 from fastapi import Depends, Header
 
-from app.arango import ArangoConnection, get_database
+from app.arango import ArangoConnection, background, get_database, request_connection
+from app.auth import bearer
 from app.config import Settings, get_settings
 from app.errors import AppError
 
 
 def get_connection(
     settings: Annotated[Settings, Depends(get_settings)],
-    x_arango_endpoint: Annotated[
+    authorization: Annotated[
         str | None,
         Header(
-            description="Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`."
+            include_in_schema=False,
+            description="Set by the Arango Platform gateway for the signed-in user.",
         ),
     ] = None,
     x_arango_database: Annotated[
-        str | None, Header(description="Override the ArangoDB database name.")
-    ] = None,
-    x_arango_username: Annotated[
-        str | None, Header(description="Override the ArangoDB username.")
-    ] = None,
-    x_arango_password: Annotated[
-        str | None, Header(description="Override the ArangoDB password.")
+        str | None, Header(description="The ArangoDB database to use (default: the server's).")
     ] = None,
 ) -> ArangoConnection:
-    base = ArangoConnection.from_settings(settings)
-    overrides = (x_arango_endpoint, x_arango_database, x_arango_username, x_arango_password)
-    if any(v is not None for v in overrides):
-        if not settings.allow_connection_override:
-            raise AppError(
-                403, "override_disabled", "Connection overrides are disabled on this server."
-            )
-        return base.with_overrides(*overrides)
-    return base
+    conn = request_connection(settings, bearer(authorization))
+    if conn is None:
+        raise AppError(
+            401,
+            "unauthenticated",
+            "No ArangoDB credentials: open the app through the Arango Platform.",
+        )
+    return conn.with_database(x_arango_database)
 
 
 ConnectionDep = Annotated[ArangoConnection, Depends(get_connection)]
@@ -49,3 +44,13 @@ def get_db(conn: ConnectionDep) -> StandardDatabase:
 
 
 DbDep = Annotated[StandardDatabase, Depends(get_db)]
+
+
+def get_background_db(
+    conn: ConnectionDep, settings: Annotated[Settings, Depends(get_settings)]
+) -> StandardDatabase:
+    """A database handle for jobs that outlive the request (see :func:`app.arango.background`)."""
+    return get_database(background(conn, settings))
+
+
+BackgroundDbDep = Annotated[StandardDatabase, Depends(get_background_db)]

@@ -30,9 +30,26 @@ export interface paths {
         };
         /**
          * Test the ArangoDB connection
-         * @description Connects with the server defaults or the `X-Arango-*` header overrides and reports the server version. Never returns the password.
+         * @description Connects as the signed-in user (on the Arango Platform) or with the server's credentials, to the `X-Arango-Database` database, and reports the server version.
          */
         get: operations["test_connection_api_v1_connection_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/databases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the databases you can access */
+        get: operations["list_databases_api_v1_databases_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -491,6 +508,11 @@ export interface components {
             server_version: string | null;
             /** Database */
             database: string;
+            /**
+             * User
+             * @description The ArangoDB user the app acts as.
+             */
+            user: string | null;
             /** Connection */
             connection: {
                 [key: string]: unknown;
@@ -1396,14 +1418,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1475,6 +1491,83 @@ export interface operations {
             };
         };
     };
+    list_databases_api_v1_databases_get: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description The ArangoDB database to use (default: the server's). */
+                "x-arango-database"?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+            /** @description Invalid request or provider configuration. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description ArangoDB rejected the credentials. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Connection override not permitted. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description ArangoDB or embedding provider failure. */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_collections_api_v1_collections_get: {
         parameters: {
             query?: {
@@ -1482,14 +1575,8 @@ export interface operations {
                 include_counts?: boolean;
             };
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1565,14 +1652,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -1654,14 +1735,8 @@ export interface operations {
                 limit?: number;
             };
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 name: string;
@@ -1739,14 +1814,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 name: string;
@@ -1826,14 +1895,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 name: string;
@@ -1920,14 +1983,8 @@ export interface operations {
                 wait?: boolean;
             };
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 name: string;
@@ -2018,14 +2075,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -2101,14 +2152,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 /** @description Collection name. */
@@ -2187,14 +2232,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 /** @description Collection name. */
@@ -2277,14 +2316,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 /** @description Collection name. */
@@ -2361,14 +2394,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 /** @description Collection name. */
@@ -2447,14 +2474,8 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path: {
                 /** @description Collection name. */
@@ -2902,14 +2923,8 @@ export interface operations {
                 wait?: boolean;
             };
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3003,14 +3018,8 @@ export interface operations {
                 wait?: boolean;
             };
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;
@@ -3102,14 +3111,8 @@ export interface operations {
                 wait?: boolean;
             };
             header?: {
-                /** @description Override the ArangoDB endpoint, e.g. `https://my-db.arangodb.cloud:8529`. */
-                "x-arango-endpoint"?: string | null;
-                /** @description Override the ArangoDB database name. */
+                /** @description The ArangoDB database to use (default: the server's). */
                 "x-arango-database"?: string | null;
-                /** @description Override the ArangoDB username. */
-                "x-arango-username"?: string | null;
-                /** @description Override the ArangoDB password. */
-                "x-arango-password"?: string | null;
             };
             path?: never;
             cookie?: never;

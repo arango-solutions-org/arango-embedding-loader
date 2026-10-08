@@ -50,6 +50,7 @@ class ConnectionInfo(BaseModel):
     connected: bool
     server_version: str | None = None
     database: str
+    user: str | None = Field(None, description="The ArangoDB user the app acts as.")
     connection: dict[str, Any]
     vector_index_supported: bool | None = Field(
         None, description="Whether the server version supports vector indexes (3.12.4+)."

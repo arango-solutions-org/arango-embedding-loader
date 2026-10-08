@@ -1,6 +1,6 @@
 import createClient, { type Middleware } from "openapi-fetch";
 
-import { connectionHeaders } from "../lib/connection";
+import { databaseHeaders } from "../lib/database";
 import type { components, paths } from "./schema";
 
 export type Schemas = components["schemas"];
@@ -39,9 +39,9 @@ function formatDetail(detail: unknown): string {
   return detail ? JSON.stringify(detail) : "";
 }
 
-const withConnection: Middleware = {
+const withDatabase: Middleware = {
   onRequest({ request }) {
-    for (const [k, v] of Object.entries(connectionHeaders())) request.headers.set(k, v);
+    for (const [k, v] of Object.entries(databaseHeaders())) request.headers.set(k, v);
     return request;
   },
 };
@@ -62,7 +62,7 @@ export function apiBaseFor(pathname: string): string {
 export const apiBase = typeof window === "undefined" ? "" : apiBaseFor(window.location.pathname);
 
 export const api = createClient<paths>({ baseUrl: apiBase });
-api.use(withConnection);
+api.use(withDatabase);
 
 /** Unwrap an openapi-fetch result, throwing ApiError on failure. */
 export async function unwrap<T>(
@@ -78,7 +78,11 @@ export async function unwrap<T>(
 
 /** Multipart requests (file uploads) go through fetch directly. */
 export async function postForm<T>(path: string, form: FormData): Promise<T> {
-  const response = await fetch(path, { method: "POST", body: form, headers: connectionHeaders() });
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "POST",
+    body: form,
+    headers: databaseHeaders(),
+  });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new ApiError(response.status, body.error ?? `HTTP ${response.status}`, body.detail);

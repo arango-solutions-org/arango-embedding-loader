@@ -157,8 +157,9 @@ All settings are environment variables (or `.env`). See [`.env.example`](.env.ex
 
 | Variable | Default | |
 |---|---|---|
-| `ARANGO_ENDPOINT` / `ARANGO_DATABASE` / `ARANGO_USERNAME` / `ARANGO_PASSWORD` | `http://localhost:8529` / `_system` / `root` / – | Default connection |
-| `ALLOW_CONNECTION_OVERRIDE` | `true` | Allow `X-Arango-*` header overrides |
+| `ARANGO_ENDPOINT` / `ARANGO_DATABASE` / `ARANGO_USERNAME` / `ARANGO_PASSWORD` | `http://localhost:8529` / `_system` / `root` / – | Connection off the platform. On the Arango Platform the endpoint is injected and users are signed in by the gateway (see [Connection](docs/API.md#connection)) |
+| `ARANGO_VERIFY_SSL` | `true` (platform: the injected CA) | `true`, `false`, or a CA bundle path |
+| `ARANGO_SERVICE_USER` | `root` | Platform only: the user for watchers started at boot |
 | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `AZURE_OPENAI_ENDPOINT` | – | OpenAI / compatible / Azure |
 | `VOYAGE_API_KEY`, `COHERE_API_KEY` | – | Hosted providers |
 | `AWS_REGION` (plus the standard AWS credential chain) | – | Bedrock |

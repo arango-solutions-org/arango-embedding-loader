@@ -18,8 +18,13 @@ from app.arango import ArangoConnection, get_database
 from app.ingest.text import split_path
 from app.models.profiles import Profile, WatcherState
 from app.services import profiles as profile_store
-from app.services.pipeline import ResolvedSpec, embed_documents, resolve_specs
-from app.services.writer import update_batch
+from app.services.pipeline import (
+    ResolvedSpec,
+    chunk_documents,
+    embed_documents,
+    resolve_specs,
+)
+from app.services.writer import insert_batch, update_batch
 
 log = logging.getLogger(__name__)
 
@@ -76,8 +81,14 @@ async def process_pending(
                 state.embedded += 1
             elif outcome.skipped:
                 state.skipped += 1
-    result = await asyncio.to_thread(update_batch, db.collection(collection), updates)
-    return len(docs), len(result.errors)
+    col = db.collection(collection)
+    result = await asyncio.to_thread(update_batch, col, updates)
+    errors = len(result.errors)
+    chunks = chunk_documents(outcomes)
+    if chunks:
+        chunk_result = await asyncio.to_thread(insert_batch, col, chunks, "replace")
+        errors += len(chunk_result.errors)
+    return len(docs), errors
 
 
 class WatcherManager:

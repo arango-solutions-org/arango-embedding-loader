@@ -9,6 +9,7 @@ import httpx
 from pydantic import Field
 
 from app.providers.base import EmbeddingProvider, InputType, ModelInfo, ProviderOptions
+from app.providers.long_input import LongInputMode
 
 
 class OllamaOptions(ProviderOptions):
@@ -17,7 +18,9 @@ class OllamaOptions(ProviderOptions):
         description="Ollama server URL. Defaults to $OLLAMA_HOST.",
     )
     keep_alive: str | None = Field(None, description="How long to keep the model loaded, e.g. 5m.")
-    truncate: bool = Field(True, description="Truncate inputs that exceed the context length.")
+    truncate: bool = Field(
+        True, description="Set from the spec's `long_input` (off only for `error`)."
+    )
     timeout: float = Field(120.0, description="Request timeout in seconds.")
 
 
@@ -54,6 +57,16 @@ class OllamaProvider(EmbeddingProvider):
         return [
             ModelInfo(id=n, dimension=self.known_dimension(n.split(":")[0])) for n in names
         ] or list(self.known_models)
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        return frozenset({"truncate_end"})
+
+    def apply_long_input(
+        self, options: ProviderOptions, model: str, mode: LongInputMode
+    ) -> ProviderOptions:
+        # The context length depends on the model and the server's num_ctx: set the spec's
+        # `max_tokens` for the loader to apply other modes.
+        return options.model_copy(update={"truncate": mode != "error"})
 
     async def embed_batch(
         self,

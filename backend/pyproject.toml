@@ -18,14 +18,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-openai = ["openai>=1.50"]
+openai = ["openai>=1.50", "tiktoken>=0.7"]
 voyage = ["voyageai>=0.3"]
 cohere = ["cohere>=5.11"]
 bedrock = ["boto3>=1.35"]
 local = ["sentence-transformers>=3.2", "torch>=2.4"]
-hosted = ["openai>=1.50", "voyageai>=0.3", "cohere>=5.11", "boto3>=1.35"]
+hosted = ["openai>=1.50", "tiktoken>=0.7", "voyageai>=0.3", "cohere>=5.11", "boto3>=1.35"]
 all = [
     "openai>=1.50",
+    "tiktoken>=0.7",
     "voyageai>=0.3",
     "cohere>=5.11",
     "boto3>=1.35",

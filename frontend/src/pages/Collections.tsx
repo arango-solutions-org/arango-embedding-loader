@@ -139,7 +139,7 @@ function ProfileDetail({ name }: { name: string }) {
       unwrap(
         api.POST("/api/v1/collections/{name}/embed", {
           params: { path: { name } },
-          body: { only_missing: true, filter: {} },
+          body: { only_missing: true, filter: {}, analyze: false },
         }),
       ),
     onSuccess: (j) => {

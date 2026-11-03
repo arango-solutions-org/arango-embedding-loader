@@ -5,6 +5,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, model_validator
 
 from app.ingest.text import meta_field_for, split_path
+from app.providers.long_input import DEFAULT_TOKEN_CHARS, LongInput, LongInputMode
 
 
 class EmbeddingFieldSpec(BaseModel):
@@ -60,6 +61,48 @@ class EmbeddingFieldSpec(BaseModel):
         ),
     )
 
+    long_input: LongInputMode = Field(
+        "truncate_end",
+        description=(
+            "What to do with a text longer than the model's token limit: `truncate_end` (keep "
+            "the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep "
+            "the start and the end), `chunk_mean` (embed overlapping chunks, store their mean), "
+            "`chunk_docs` (store each chunk as its own document, linked by `parent_key`), `skip` "
+            "(don't embed; status `skipped_too_long`) or `error` (fail the job)."
+        ),
+    )
+    chunk_overlap_tokens: int = Field(
+        25,
+        ge=0,
+        description=(
+            "Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the "
+            "nearest word. At most half the token limit."
+        ),
+    )
+    max_tokens: int | None = Field(
+        None,
+        ge=1,
+        description=(
+            "Advanced: token limit to apply. Defaults to the model's limit, when known. Needed "
+            "for models whose limit the loader doesn't know (e.g. Ollama)."
+        ),
+    )
+    token_chars: float = Field(
+        DEFAULT_TOKEN_CHARS,
+        gt=0,
+        description=(
+            "Advanced: characters per token, used to estimate token counts for models without "
+            "a local tokenizer."
+        ),
+    )
+    warn_on_long_input: bool = Field(
+        True,
+        description=(
+            "Log each over-limit text as a warning; when off, at info level. With `error` it is "
+            "always logged as an error."
+        ),
+    )
+
     @model_validator(mode="after")
     def _check(self) -> EmbeddingFieldSpec:
         if not self.source_field and not self.template:
@@ -77,6 +120,16 @@ class EmbeddingFieldSpec(BaseModel):
         if self.source_field:
             return f"{self.source_field.replace('.', '_')}_embedding"
         return "embedding"
+
+    @property
+    def long_input_settings(self) -> LongInput:
+        return LongInput(
+            mode=self.long_input,
+            chunk_overlap_tokens=self.chunk_overlap_tokens,
+            max_tokens=self.max_tokens,
+            token_chars=self.token_chars,
+            warn=self.warn_on_long_input,
+        )
 
     @property
     def meta_field(self) -> str:

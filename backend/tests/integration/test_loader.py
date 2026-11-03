@@ -28,6 +28,8 @@ def test_load_json_body_and_duplicates(client, db):
         "updated": 0,
         "skipped": 1,
         "failed": 0,
+        "over_limit": 0,
+        "chunks": 0,
     }
     doc = db.collection("docs").get("1")
     assert len(doc["embedding"]) == 384 and doc["text"] == "alpha"
@@ -155,6 +157,72 @@ def test_pubmedbert_customer_scenario(client, db):
         str(json.loads(SAMPLE.read_text().splitlines()[0])["id"])
     )
     assert doc["embedding_meta"]["model"] == "NeuML/pubmedbert-base-embeddings"
+
+
+@pytest.mark.local
+def test_over_limit_inputs(client, db):
+    """Texts longer than the model limit: split into chunk documents, or stop the run."""
+    pytest.importorskip("sentence_transformers")
+    long_text = " ".join(f"token{i}" for i in range(600))  # well over MiniLM's 256 tokens
+    spec = {
+        "source_field": "text",
+        "target_field": "embedding",
+        "provider": "sentence_transformers",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "long_input": "chunk_docs",
+    }
+    body = {
+        "collection": "overrun",
+        "key_field": "id",
+        "embeddings": [spec],
+        "documents": [{"id": "long", "text": long_text}, {"id": "short", "text": "hello"}],
+    }
+    job = client.post("/api/v1/load?wait=true", json=body).json()
+    assert job["status"] == "succeeded", job
+    assert job["counts"]["over_limit"] == 1 and job["counts"]["written"] == 2
+    chunks = job["counts"]["chunks"]
+    assert chunks >= 2
+
+    col = db.collection("overrun")
+    parent = col.get("long")
+    assert parent["embedding"] is None and parent["embedding_meta"]["status"] == "chunked"
+    assert parent["embedding_meta"]["chunks"] == chunks
+    first = col.get("long_embedding_chunk_0")
+    assert len(first["embedding"]) == 384 and first["text"] in long_text
+    assert first["embedding_meta"]["parent_key"] == "long"
+    short_meta = col.get("short")["embedding_meta"]
+    assert short_meta["truncated"] is False and short_meta["chunks"] == 1
+    assert short_meta["token_count"] == "exact"
+
+    # Loading again replaces the chunks instead of failing on duplicate keys.
+    again = client.post("/api/v1/load?wait=true", json=body | {"on_duplicate": "replace"}).json()
+    assert again["status"] == "succeeded" and again["counts"]["failed"] == 0, again
+
+    report = client.post(
+        "/api/v1/load?wait=true", json=body | {"collection": "overrun_scan", "analyze": True}
+    ).json()
+    assert report["status"] == "succeeded", report
+    field = report["result"]["analysis"]["fields"]["embedding"]
+    assert field["over_limit"] == 1 and field["longest"][0]["document"] == "long"
+    assert not db.has_collection("overrun_scan")
+
+    # The long row comes first here, but the pre-scan means nothing is written either way.
+    spec["long_input"] = "error"
+    job = client.post("/api/v1/load?wait=true", json=body | {"collection": "overrun_err"}).json()
+    assert job["status"] == "failed" and "long" in job["message"], job
+    assert job["result"]["prescan"] == {"status": "failed"}
+    assert job["counts"]["embedded"] == 0
+
+    # The default, truncate_end: one vector from the first tokens, truncation recorded.
+    del spec["long_input"]
+    job = client.post(
+        "/api/v1/load?wait=true", json=body | {"collection": "overrun_default"}
+    ).json()
+    assert job["status"] == "succeeded" and job["counts"]["over_limit"] == 1, job
+    meta = db.collection("overrun_default").get("long")["embedding_meta"]
+    assert meta["long_input"] == "truncate_end" and meta["truncated"] is True
+    # At least the overflow is dropped (a little more when the cut moves back to a word start).
+    assert meta["tokens_dropped"] >= meta["input_tokens"] - meta["max_tokens"] > 0
 
 
 def test_platform_token_from_gateway(platform_client, test_db, db):

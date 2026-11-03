@@ -9,6 +9,11 @@ from app.models.embedding import EmbeddingFieldSpec, VectorIndexSpec
 
 OnDuplicate = Literal["error", "update", "replace", "ignore"]
 
+ANALYZE_DESCRIPTION = (
+    "Count tokens only: report how many texts are longer than the model's limit, token "
+    "percentiles and the longest documents (in `result.analysis`). Nothing is embedded or written."
+)
+
 
 class LoadOptions(BaseModel):
     collection: str = Field(..., description="Target collection.", examples=["pubmed"])
@@ -44,6 +49,7 @@ class LoadOptions(BaseModel):
         None, description="Create an ArangoDB vector index after the load."
     )
     dry_run: bool = Field(False, description="Embed but do not write; returns sample output.")
+    analyze: bool = Field(False, description=ANALYZE_DESCRIPTION)
     max_documents: int | None = Field(None, ge=1, description="Stop after this many documents.")
 
 
@@ -105,6 +111,7 @@ class ReembedRequest(BaseModel):
     store_metadata: bool | None = None
     vector_index: VectorIndexSpec | None = None
     max_documents: int | None = Field(None, ge=1)
+    analyze: bool = Field(False, description=ANALYZE_DESCRIPTION)
 
 
 class PreviewResponse(BaseModel):

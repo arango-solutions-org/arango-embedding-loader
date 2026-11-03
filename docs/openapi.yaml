@@ -2172,6 +2172,51 @@ components:
           description: 'What to do when the source is missing/empty: `skip` (store document without vector),
             `null` (set the target to null) or `error` (reject the document).'
           default: skip
+        long_input:
+          type: string
+          enum:
+          - truncate_end
+          - truncate_start
+          - truncate_middle
+          - chunk_mean
+          - chunk_docs
+          - skip
+          - error
+          title: Long Input
+          description: 'What to do with a text longer than the model''s token limit: `truncate_end` (keep
+            the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep the start
+            and the end), `chunk_mean` (embed overlapping chunks, store their mean), `chunk_docs` (store
+            each chunk as its own document, linked by `parent_key`), `skip` (don''t embed; status `skipped_too_long`)
+            or `error` (fail the job).'
+          default: truncate_end
+        chunk_overlap_tokens:
+          type: integer
+          minimum: 0.0
+          title: Chunk Overlap Tokens
+          description: Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the
+            nearest word. At most half the token limit.
+          default: 25
+        max_tokens:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Max Tokens
+          description: 'Advanced: token limit to apply. Defaults to the model''s limit, when known. Needed
+            for models whose limit the loader doesn''t know (e.g. Ollama).'
+        token_chars:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Token Chars
+          description: 'Advanced: characters per token, used to estimate token counts for models without
+            a local tokenizer.'
+          default: 4.0
+        warn_on_long_input:
+          type: boolean
+          title: Warn On Long Input
+          description: Log each over-limit text as a warning; when off, at info level. With `error` it
+            is always logged as an error.
+          default: true
       type: object
       title: EmbeddingFieldSpec
       description: Labels a field (or template of fields) to embed and where to store the vector.
@@ -2386,6 +2431,16 @@ components:
           type: integer
           title: Failed
           default: 0
+        over_limit:
+          type: integer
+          title: Over Limit
+          description: Documents whose text was longer than the model's token limit.
+          default: 0
+        chunks:
+          type: integer
+          title: Chunks
+          description: 'Chunk documents written (`long_input: chunk_docs`).'
+          default: 0
       type: object
       required:
       - read
@@ -2394,6 +2449,8 @@ components:
       - updated
       - skipped
       - failed
+      - over_limit
+      - chunks
       title: JobCounts
     LoadDocumentsRequest:
       properties:
@@ -2460,6 +2517,12 @@ components:
           type: boolean
           title: Dry Run
           description: Embed but do not write; returns sample output.
+          default: false
+        analyze:
+          type: boolean
+          title: Analyze
+          description: 'Count tokens only: report how many texts are longer than the model''s limit, token
+            percentiles and the longest documents (in `result.analysis`). Nothing is embedded or written.'
           default: false
         max_documents:
           anyOf:
@@ -2556,6 +2619,12 @@ components:
           title: Dry Run
           description: Embed but do not write; returns sample output.
           default: false
+        analyze:
+          type: boolean
+          title: Analyze
+          description: 'Count tokens only: report how many texts are longer than the model''s limit, token
+            percentiles and the longest documents (in `result.analysis`). Nothing is embedded or written.'
+          default: false
         max_documents:
           anyOf:
           - type: integer
@@ -2606,6 +2675,12 @@ components:
           - type: 'null'
           title: Dimension
           description: Output dimension, when known.
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Tokens
+          description: Input token limit, when known.
         description:
           anyOf:
           - type: string
@@ -2615,6 +2690,7 @@ components:
       required:
       - id
       - dimension
+      - max_tokens
       - description
       title: ModelInfo
     Preset:
@@ -2981,6 +3057,12 @@ components:
             minimum: 1.0
           - type: 'null'
           title: Max Documents
+        analyze:
+          type: boolean
+          title: Analyze
+          description: 'Count tokens only: report how many texts are longer than the model''s limit, token
+            percentiles and the longest documents (in `result.analysis`). Nothing is embedded or written.'
+          default: false
       type: object
       title: ReembedRequest
     SampleResponse:

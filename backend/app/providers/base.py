@@ -20,6 +20,15 @@ from tenacity import (
     wait_exponential_jitter,
 )
 
+from app.providers.long_input import (
+    EstimateTokenizer,
+    LongInput,
+    LongInputMode,
+    TextPlan,
+    Tokenizer,
+    plan_text,
+)
+
 InputType = Literal["document", "query"]
 
 
@@ -42,6 +51,7 @@ class ModelInfo(BaseModel):
 
     id: str
     dimension: int | None = Field(None, description="Output dimension, when known.")
+    max_tokens: int | None = Field(None, description="Input token limit, when known.")
     description: str | None = None
 
 
@@ -136,6 +146,29 @@ class EmbeddingProvider(ABC):
                 return info.dimension
         return None
 
+    # -------------------------------------------------------------- long input
+
+    def token_limit(self, model: str, options: ProviderOptions) -> int | None:
+        """The model's input token limit. Defaults to ``known_models``; ``None`` if unknown."""
+        for info in self.known_models:
+            if info.id == model:
+                return info.max_tokens
+        return None
+
+    def exact_tokenizer(self, model: str, options: ProviderOptions) -> Tokenizer | None:
+        """The model's own tokenizer, if available. Otherwise token counts are estimated."""
+        return None
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        """Truncate modes the provider applies itself (the whole text is sent)."""
+        return frozenset()
+
+    def apply_long_input(
+        self, options: ProviderOptions, model: str, mode: LongInputMode
+    ) -> ProviderOptions:
+        """Set the provider's own truncation option to match ``mode``. Default: no change."""
+        return options
+
     # --------------------------------------------------------------- embedding
 
     @abstractmethod
@@ -149,6 +182,36 @@ class EmbeddingProvider(ABC):
         input_type: InputType,
     ) -> list[list[float]]:
         """Embed at most ``max_batch_size`` texts in a single provider call."""
+
+    def plan_inputs(
+        self,
+        texts: list[str],
+        *,
+        model: str,
+        options: ProviderOptions,
+        input_type: InputType,
+        long_input: LongInput | None = None,
+    ) -> list[TextPlan]:
+        """Count each text's tokens and decide how it is sent. Called in a worker thread."""
+        settings = long_input or LongInput()
+        limit = settings.max_tokens or self.token_limit(model, options)
+        tokenizer = self.exact_tokenizer(model, options) or EstimateTokenizer(settings.token_chars)
+        native = self.native_long_input(model)
+        return [
+            plan_text(text, tokens, limit, settings, exact=tokenizer.exact, native=native)
+            for text, tokens in zip(texts, tokenizer.tokenize(texts), strict=True)
+        ]
+
+    def combine_vectors(
+        self, vectors: list[list[float]], weights: list[int] | None, options: ProviderOptions
+    ) -> list[float]:
+        """Weighted mean of the vectors of one text's pieces."""
+        w = weights or [1] * len(vectors)
+        total = float(sum(w)) or 1.0
+        return [
+            sum(wi * v[k] for v, wi in zip(vectors, w, strict=True)) / total
+            for k in range(len(vectors[0]))
+        ]
 
     def is_retryable(self, exc: BaseException) -> bool:
         return default_is_retryable(exc)

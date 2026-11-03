@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr
 
@@ -16,6 +16,8 @@ from app.providers.base import (
     ModelInfo,
     ProviderOptions,
 )
+from app.providers.cohere_provider import cohere_truncate
+from app.providers.long_input import LongInputMode
 
 
 class BedrockOptions(ProviderOptions):
@@ -28,6 +30,9 @@ class BedrockOptions(ProviderOptions):
     aws_secret_access_key: SecretStr | None = None
     aws_session_token: SecretStr | None = None
     normalize: bool = Field(True, description="Titan v2: return unit-length vectors.")
+    truncate: Literal["NONE", "START", "END"] = Field(
+        "END", description="Cohere models: set from the spec's `long_input`."
+    )
 
 
 class BedrockProvider(EmbeddingProvider):
@@ -42,14 +47,24 @@ class BedrockProvider(EmbeddingProvider):
     default_model = "amazon.titan-embed-text-v2:0"
     supports_dimensions = True
     known_models = (
-        ModelInfo(id="amazon.titan-embed-text-v2:0", dimension=1024),
-        ModelInfo(id="amazon.titan-embed-text-v1", dimension=1536),
-        ModelInfo(id="cohere.embed-english-v3", dimension=1024),
-        ModelInfo(id="cohere.embed-multilingual-v3", dimension=1024),
+        ModelInfo(id="amazon.titan-embed-text-v2:0", dimension=1024, max_tokens=8192),
+        ModelInfo(id="amazon.titan-embed-text-v1", dimension=1536, max_tokens=8192),
+        ModelInfo(id="cohere.embed-english-v3", dimension=1024, max_tokens=512),
+        ModelInfo(id="cohere.embed-multilingual-v3", dimension=1024, max_tokens=512),
     )
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        if model.startswith("cohere."):
+            return frozenset({"truncate_end", "truncate_start"})
+        return frozenset()  # Titan has no truncation option
+
+    def apply_long_input(
+        self, options: ProviderOptions, model: str, mode: LongInputMode
+    ) -> ProviderOptions:
+        return options.model_copy(update={"truncate": cohere_truncate(mode)})
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, BedrockOptions)
@@ -110,7 +125,7 @@ class BedrockProvider(EmbeddingProvider):
             body: dict[str, Any] = {
                 "texts": texts,
                 "input_type": "search_document" if input_type == "document" else "search_query",
-                "truncate": "END",
+                "truncate": options.truncate,
             }
             result = await asyncio.to_thread(self._invoke, client, model, body)
             embeddings = result["embeddings"]

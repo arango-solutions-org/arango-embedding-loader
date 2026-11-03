@@ -128,6 +128,84 @@ Each embedded document looks like this:
 }
 ```
 
+### Texts longer than the model's limit
+
+Every embedding model reads a fixed number of tokens: 512 for PubMedBERT, 256 for MiniLM, 8,191
+for OpenAI's models. The loader counts each text's tokens and handles texts over the limit
+according to `long_input` on the embedding spec or profile. In the GUI, it's under **Texts longer
+than the model's limit** in the model step.
+
+| `long_input` | What happens to a text over the limit |
+| --- | --- |
+| `truncate_end` (default) | Keep the first tokens. This was the behaviour before, and is now recorded. |
+| `truncate_start` | Keep the last tokens. |
+| `truncate_middle` | Keep the start and the end, joined by a line break. |
+| `chunk_mean` | Split into overlapping chunks, embed each, store the token-weighted mean as one vector. |
+| `chunk_docs` | Split into overlapping chunks and store each as its own document (see below). |
+| `skip` | Don't embed. The document is stored with `<target>_meta.status: "skipped_too_long"`. |
+| `error` | Fail the job. See [Checking lengths before a load](#checking-lengths-before-a-load). |
+
+Options on the spec:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `chunk_overlap_tokens` | `25` | Tokens shared by consecutive chunks, rounded to the nearest word, at most half the limit. |
+| `warn_on_long_input` | `true` | Log each long text as a warning. When `false`, they're logged at info level. With `error` they're always logged as errors. |
+| `max_tokens` | model's limit | Advanced. The token limit to apply. Needed when the loader doesn't know the model's limit, e.g. Ollama. |
+| `token_chars` | `4` | Advanced. Characters per token, used to estimate counts for models without a local tokenizer. |
+
+**How tokens are counted.**
+
+| Provider | Count | What the loader sends |
+| --- | --- | --- |
+| Sentence-Transformers | Exact, with the model's own tokenizer | The loader applies every mode. |
+| OpenAI | Exact, with `tiktoken` (other OpenAI-compatible models are estimated) | The loader applies every mode. |
+| Voyage | Exact, with Voyage's tokenizer from the Hugging Face Hub | `truncate_end` uses Voyage's own truncation; the loader applies the others. |
+| Cohere, Bedrock (Cohere models) | Estimated | `truncate_end` and `truncate_start` use Cohere's `truncate` option; the loader applies the others. |
+| Ollama | Estimated; the limit must be set with `max_tokens` | `truncate_end` uses Ollama's own truncation; the loader applies the others. |
+| Bedrock (Titan) | Estimated | The loader applies every mode. |
+
+When the provider truncates, it sends the whole text, so the cut is exact even if the loader's
+count is an estimate. `error` turns the provider's truncation off. For every other mode it stays
+on, as a backstop in case an estimated chunk is slightly too long. Pieces are always cut on word
+boundaries.
+
+**What's recorded.** Every document's `<target>_meta` (for example `embedding_meta`) records
+`input_tokens`, `truncated` (`true`/`false`), `tokens_dropped` and `chunks`, plus `max_tokens`,
+`long_input` and `token_count` (`exact` or `estimated`). The job's `counts.over_limit` shows how
+many documents went over the limit. Each long text is also logged with its key, token count, limit
+and what was done.
+
+**`chunk_docs`.** The original document keeps its fields, gets `<target>: null` and
+`<target>_meta.status: "chunked"`. Each chunk is written to the **same collection** as a copy of
+the original. The copy has the chunk's text in `source_field` (or in `<target>_text` for templates)
+and its own vector. It's keyed `<parent _key>_<target>_chunk_<n>`, and its `<target>_meta` holds
+`parent_key`, `chunk_index` and `chunk_count`. This is a plain document collection, not a graph:
+the link is the `parent_key` value, not an edge. A vector search can return the original:
+
+```aql
+FOR c IN pubmed
+  SORT APPROX_NEAR_COSINE(c.embedding, @q) DESC LIMIT 10
+  RETURN DOCUMENT(pubmed, c.embedding_meta.parent_key || c._key)
+```
+
+Chunks are written with overwrite, so re-running a load or re-embed replaces them. If a text later
+yields fewer chunks, the extra chunk documents from the earlier run stay behind.
+
+#### Checking lengths before a load
+
+`"analyze": true` on a load or re-embed (**Analyze only** in the GUI) counts tokens without
+embedding or writing anything. `result.analysis` reports, for each field: the limit, how many
+documents are over it and by how many tokens, the median, p90, p99 and max token counts, and the
+20 longest over-limit documents. Use it to choose `long_input` before a long run.
+
+With `long_input: error`, the loader runs this check automatically before embedding anything. If
+any text is too long, the job fails straight away. The error log and job message name the longest
+documents, and `result.analysis` has the full report. Without this, a long row near the end would
+fail the job after hours of embedding. Uploaded files, JSON bodies and re-embeds are read twice
+for this. URL loads are streamed once, so they skip the check (`result.prescan.status:
+"skipped"`) and stop at the first long text instead.
+
 ### Auto-embedding collections
 
 ```bash

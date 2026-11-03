@@ -5,6 +5,7 @@ Also Azure OpenAI and any OpenAI-compatible server (vLLM, Hugging Face TEI, LM S
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -17,6 +18,9 @@ from app.providers.base import (
     ModelInfo,
     ProviderOptions,
 )
+from app.providers.long_input import TiktokenTokenizer, Tokenizer
+
+log = logging.getLogger(__name__)
 
 
 def _env_secret(name: str) -> SecretStr | None:
@@ -59,13 +63,14 @@ class OpenAIProvider(EmbeddingProvider):
     default_model = "text-embedding-3-small"
     supports_dimensions = True
     known_models = (
-        ModelInfo(id="text-embedding-3-small", dimension=1536),
-        ModelInfo(id="text-embedding-3-large", dimension=3072),
-        ModelInfo(id="text-embedding-ada-002", dimension=1536),
+        ModelInfo(id="text-embedding-3-small", dimension=1536, max_tokens=8191),
+        ModelInfo(id="text-embedding-3-large", dimension=3072, max_tokens=8191),
+        ModelInfo(id="text-embedding-ada-002", dimension=1536, max_tokens=8191),
     )
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
+        self._tokenizers: dict[str, Tokenizer | None] = {}
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, OpenAIOptions)
@@ -74,6 +79,24 @@ class OpenAIProvider(EmbeddingProvider):
                 available=False, reason="No API key: set OPENAI_API_KEY or pass api_key."
             )
         return Availability(available=True)
+
+    def exact_tokenizer(self, model: str, options: ProviderOptions) -> Tokenizer | None:
+        """tiktoken for OpenAI models; ``None`` (estimate) for other OpenAI-compatible models."""
+        if model in self._tokenizers:
+            return self._tokenizers[model]
+        tokenizer: Tokenizer | None = None
+        try:
+            import tiktoken
+
+            tokenizer = TiktokenTokenizer(tiktoken.encoding_for_model(model))
+        except ImportError:
+            log.info("tiktoken is not installed; estimating token counts for %s", model)
+        except KeyError:
+            pass  # not an OpenAI model name
+        except Exception as exc:  # noqa: BLE001 - e.g. no network to fetch the encoding
+            log.warning("No tiktoken encoding for %s (%s); estimating token counts", model, exc)
+        self._tokenizers[model] = tokenizer
+        return tokenizer
 
     def _client(self, options: OpenAIOptions) -> Any:
         key = options.model_dump_json()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -14,6 +15,9 @@ from app.providers.base import (
     ModelInfo,
     ProviderOptions,
 )
+from app.providers.long_input import HFTokenizer, LongInputMode, Tokenizer
+
+log = logging.getLogger(__name__)
 
 
 class VoyageOptions(ProviderOptions):
@@ -36,17 +40,44 @@ class VoyageProvider(EmbeddingProvider):
     default_model = "voyage-3.5"
     supports_dimensions = True
     known_models = (
-        ModelInfo(id="voyage-3.5", dimension=1024),
-        ModelInfo(id="voyage-3.5-lite", dimension=1024),
-        ModelInfo(id="voyage-3-large", dimension=1024),
-        ModelInfo(id="voyage-code-3", dimension=1024),
-        ModelInfo(id="voyage-finance-2", dimension=1024),
-        ModelInfo(id="voyage-law-2", dimension=1024),
-        ModelInfo(id="voyage-multilingual-2", dimension=1024),
+        ModelInfo(id="voyage-3.5", dimension=1024, max_tokens=32000),
+        ModelInfo(id="voyage-3.5-lite", dimension=1024, max_tokens=32000),
+        ModelInfo(id="voyage-3-large", dimension=1024, max_tokens=32000),
+        ModelInfo(id="voyage-code-3", dimension=1024, max_tokens=32000),
+        ModelInfo(id="voyage-finance-2", dimension=1024, max_tokens=32000),
+        ModelInfo(id="voyage-law-2", dimension=1024, max_tokens=16000),
+        ModelInfo(id="voyage-multilingual-2", dimension=1024, max_tokens=32000),
     )
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
+        self._tokenizers: dict[str, Tokenizer | None] = {}
+
+    def exact_tokenizer(self, model: str, options: ProviderOptions) -> Tokenizer | None:
+        """Voyage publishes its tokenizers on the Hugging Face Hub (``voyageai/<model>``)."""
+        if model in self._tokenizers:
+            return self._tokenizers[model]
+        tokenizer: Tokenizer | None = None
+        try:
+            from tokenizers import Tokenizer as HubTokenizer
+
+            hub = HubTokenizer.from_pretrained(f"voyageai/{model}")
+            hub.no_truncation()
+            tokenizer = HFTokenizer(hub)
+        except Exception as exc:  # noqa: BLE001 - not installed, unknown model or no network
+            log.warning("No tokenizer for voyageai/%s (%s); estimating token counts", model, exc)
+        self._tokenizers[model] = tokenizer
+        return tokenizer
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        return frozenset({"truncate_end"})
+
+    def apply_long_input(
+        self, options: ProviderOptions, model: str, mode: LongInputMode
+    ) -> ProviderOptions:
+        # Voyage truncates the end, or rejects long inputs. Every mode but `error` keeps
+        # truncation on as a backstop for estimated counts.
+        return options.model_copy(update={"truncation": mode != "error"})
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, VoyageOptions)

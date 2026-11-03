@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import { FieldLabeler } from "../components/FieldLabeler";
 import { JobProgress } from "../components/JobProgress";
+import { LongInputForm } from "../components/LongInputForm";
 import { ModelPicker } from "../components/ModelPicker";
 import {
   Badge,
@@ -30,11 +31,13 @@ import {
 import { useCollections } from "../lib/queries";
 import {
   buildSpecs,
+  DEFAULT_LONG_INPUT,
   DEFAULT_MODEL_CHOICE,
   formatBytes,
   formatNumber,
   vectorIndexSpec,
   type LabeledField,
+  type LongInputSettings,
   type ModelChoice,
   type OnMissing,
 } from "../lib/spec";
@@ -177,6 +180,7 @@ export function LoadWizard() {
   const [templateTarget, setTemplateTarget] = useState("embedding");
   const [keyField, setKeyField] = useState("");
   const [onMissing, setOnMissing] = useState<OnMissing>("skip");
+  const [longInput, setLongInput] = useState<LongInputSettings>(DEFAULT_LONG_INPUT);
 
   // Step 3 - model
   const [choice, setChoice] = useState<ModelChoice>(DEFAULT_MODEL_CHOICE);
@@ -190,6 +194,7 @@ export function LoadWizard() {
   const [vectorIndex, setVectorIndex] = useState(true);
   const [metric, setMetric] = useState<VectorIndexSpec["metric"]>("cosine");
   const [dryRun, setDryRun] = useState(false);
+  const [analyze, setAnalyze] = useState(false);
   const [onlyMissing, setOnlyMissing] = useState(true);
   const [saveProfile, setSaveProfile] = useState(false);
   const [autoWatch, setAutoWatch] = useState(false);
@@ -253,15 +258,22 @@ export function LoadWizard() {
 
   const specs = useMemo(
     () =>
-      buildSpecs(labeled, useTemplate ? template : null, choice, onMissing, templateTarget),
-    [labeled, useTemplate, template, choice, onMissing, templateTarget],
+      buildSpecs(
+        labeled,
+        useTemplate ? template : null,
+        choice,
+        onMissing,
+        templateTarget,
+        longInput,
+      ),
+    [labeled, useTemplate, template, choice, onMissing, templateTarget, longInput],
   );
 
   const run = useMutation({
     mutationFn: async (): Promise<Job> => {
       const vi = vectorIndexSpec(vectorIndex, metric);
       const batch = Number(batchSize) || 64;
-      if (saveProfile && !dryRun) {
+      if (saveProfile && !dryRun && !analyze) {
         await unwrap(
           api.PUT("/api/v1/collections/{name}/profile", {
             params: { path: { name: targetCollection } },
@@ -288,6 +300,7 @@ export function LoadWizard() {
               store_metadata: storeMetadata,
               vector_index: vi,
               filter: {},
+              analyze,
             },
           }),
         );
@@ -302,6 +315,7 @@ export function LoadWizard() {
         store_metadata: storeMetadata,
         vector_index: vi,
         dry_run: dryRun,
+        analyze,
       };
       if (mode === "url") {
         return unwrap(
@@ -521,6 +535,7 @@ export function LoadWizard() {
       {step === 2 && (
         <Card title="3 · Choose an embedding model">
           <ModelPicker value={choice} onChange={setChoice} />
+          <LongInputForm value={longInput} onChange={setLongInput} />
           <Nav onBack={() => setStep(1)} onNext={() => setStep(3)} />
         </Card>
       )}
@@ -596,6 +611,12 @@ export function LoadWizard() {
                 label="Store embedding metadata"
                 hint="Adds <target>_meta with provider, model, dimension and timestamp."
               />
+              <Checkbox
+                checked={analyze}
+                onChange={setAnalyze}
+                label="Analyze only"
+                hint="Count tokens and report texts longer than the model's limit. Nothing is embedded or written."
+              />
               {mode === "collection" ? (
                 <Checkbox
                   checked={onlyMissing}
@@ -608,6 +629,7 @@ export function LoadWizard() {
                   <Checkbox
                     checked={dryRun}
                     onChange={setDryRun}
+                    disabled={analyze}
                     label="Dry run"
                     hint="Embed but don't write; shows sample output."
                   />
@@ -618,7 +640,7 @@ export function LoadWizard() {
               <Checkbox
                 checked={saveProfile}
                 onChange={setSaveProfile}
-                disabled={dryRun}
+                disabled={dryRun || analyze}
                 label={<b>Save as this collection's auto-embed profile</b>}
                 hint="Future loads into the collection are embedded automatically - no field labels needed."
               />
@@ -648,7 +670,7 @@ export function LoadWizard() {
           <Nav
             onBack={() => setStep(2)}
             onNext={() => run.mutate()}
-            nextLabel={dryRun ? "Run dry run" : mode === "collection" ? "Embed collection" : "Start load"}
+            nextLabel={analyze ? "Run analysis" : dryRun ? "Run dry run" : mode === "collection" ? "Embed collection" : "Start load"}
             nextDisabled={!targetReady}
             loading={run.isPending}
             extra={

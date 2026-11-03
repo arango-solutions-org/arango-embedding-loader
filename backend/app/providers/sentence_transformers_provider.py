@@ -7,6 +7,7 @@ Runs any sentence-transformers compatible model in-process (CPU, Apple MPS or CU
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import threading
 from typing import Any
@@ -14,6 +15,7 @@ from typing import Any
 from pydantic import Field
 
 from app.providers.base import EmbeddingProvider, InputType, ModelInfo, ProviderOptions
+from app.providers.long_input import HFTokenizer, Tokenizer
 
 
 class SentenceTransformersOptions(ProviderOptions):
@@ -96,6 +98,39 @@ class SentenceTransformersProvider(EmbeddingProvider):
                 self._models[key] = loaded
                 self._encode_locks[id(loaded)] = threading.Lock()
             return loaded
+
+    def exact_tokenizer(self, model: str, options: ProviderOptions) -> Tokenizer | None:
+        assert isinstance(options, SentenceTransformersOptions)
+        st_model = self._model(model, options)
+        tokenizer = getattr(st_model, "tokenizer", None)
+        if tokenizer is None:
+            return None
+        return HFTokenizer(tokenizer, lock=self._encode_locks[id(st_model)])
+
+    def token_limit(self, model: str, options: ProviderOptions) -> int | None:
+        """``max_seq_length`` less the special tokens and the document prefix."""
+        assert isinstance(options, SentenceTransformersOptions)
+        st_model = self._model(model, options)
+        max_len = getattr(st_model, "max_seq_length", None)
+        tokenizer = getattr(st_model, "tokenizer", None)
+        if not max_len or tokenizer is None:
+            return None
+        with self._encode_locks[id(st_model)]:
+            reserved = tokenizer.num_special_tokens_to_add(pair=False)
+            if options.document_prefix:
+                reserved += len(
+                    tokenizer(options.document_prefix, add_special_tokens=False)["input_ids"]
+                )
+        return max(1, int(max_len) - reserved)
+
+    def combine_vectors(
+        self, vectors: list[list[float]], weights: list[int] | None, options: ProviderOptions
+    ) -> list[float]:
+        mean = super().combine_vectors(vectors, weights, options)
+        if isinstance(options, SentenceTransformersOptions) and options.normalize_embeddings:
+            norm = math.sqrt(sum(v * v for v in mean)) or 1.0
+            mean = [v / norm for v in mean]
+        return mean
 
     def _encode(
         self, texts: list[str], model: str, options: SentenceTransformersOptions

@@ -26,6 +26,10 @@ class JobCounts(BaseModel):
     updated: int = 0
     skipped: int = 0
     failed: int = 0
+    over_limit: int = Field(
+        0, description="Documents whose text was longer than the model's token limit."
+    )
+    chunks: int = Field(0, description="Chunk documents written (`long_input: chunk_docs`).")
 
 
 class Job(BaseModel):

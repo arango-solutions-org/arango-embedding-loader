@@ -22,6 +22,12 @@ On the Arango Platform the app connects as the signed-in user. Users no longer e
 ### Added
 
 - `GET /api/v1/databases` lists the databases the user can access.
+- `long_input` on the embedding spec and profile, for every provider, sets what happens to texts longer than the model's token limit: `truncate_end` (the default, and the behaviour before), `truncate_start`, `truncate_middle`, `chunk_mean`, `chunk_docs`, `skip` or `error`. There are also `chunk_overlap_tokens` (default 25, rounded to the nearest word), `warn_on_long_input`, and the advanced `max_tokens` and `token_chars`.
+- Tokens are counted with the model's own tokenizer for Sentence-Transformers, OpenAI (`tiktoken`, added to the `openai` extra) and Voyage, and estimated for other providers. Cohere, Bedrock-Cohere, Voyage and Ollama use their own truncation options where one matches the mode.
+- `<target>_meta` records `input_tokens`, `truncated`, `tokens_dropped` and `chunks` on every document. Job counts include `over_limit` and `chunks`.
+- The GUI shows enum provider options as drop-downs.
+- `analyze: true` on loads and re-embeds (**Analyze only** in the GUI) reports token lengths and over-limit documents without embedding or writing anything.
+- With `long_input: error`, the input is checked for over-limit texts before anything is embedded, so the job fails up front rather than partway through. URL loads skip this check.
 
 ### Fixed
 

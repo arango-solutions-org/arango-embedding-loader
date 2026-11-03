@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, SecretStr
 
@@ -14,6 +14,13 @@ from app.providers.base import (
     ModelInfo,
     ProviderOptions,
 )
+from app.providers.long_input import LongInputMode
+
+
+def cohere_truncate(mode: str) -> str:
+    """Cohere's `truncate` for a `long_input` mode. Modes the loader applies itself keep `END`
+    as a backstop for estimated token counts."""
+    return {"truncate_start": "START", "error": "NONE"}.get(mode, "END")
 
 
 class CohereOptions(ProviderOptions):
@@ -22,7 +29,9 @@ class CohereOptions(ProviderOptions):
         description="API key. Defaults to $COHERE_API_KEY.",
     )
     base_url: str | None = Field(None, description="Override API base URL.")
-    truncate: str = Field("END", description="NONE | START | END")
+    truncate: Literal["NONE", "START", "END"] = Field(
+        "END", description="Set from the spec's `long_input`; a value here is ignored."
+    )
     timeout: float = Field(60.0, description="Request timeout in seconds.")
 
 
@@ -37,15 +46,23 @@ class CohereProvider(EmbeddingProvider):
     default_model = "embed-v4.0"
     supports_dimensions = True
     known_models = (
-        ModelInfo(id="embed-v4.0", dimension=1536),
-        ModelInfo(id="embed-english-v3.0", dimension=1024),
-        ModelInfo(id="embed-multilingual-v3.0", dimension=1024),
-        ModelInfo(id="embed-english-light-v3.0", dimension=384),
-        ModelInfo(id="embed-multilingual-light-v3.0", dimension=384),
+        ModelInfo(id="embed-v4.0", dimension=1536, max_tokens=128000),
+        ModelInfo(id="embed-english-v3.0", dimension=1024, max_tokens=512),
+        ModelInfo(id="embed-multilingual-v3.0", dimension=1024, max_tokens=512),
+        ModelInfo(id="embed-english-light-v3.0", dimension=384, max_tokens=512),
+        ModelInfo(id="embed-multilingual-light-v3.0", dimension=384, max_tokens=512),
     )
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        return frozenset({"truncate_end", "truncate_start"})
+
+    def apply_long_input(
+        self, options: ProviderOptions, model: str, mode: LongInputMode
+    ) -> ProviderOptions:
+        return options.model_copy(update={"truncate": cohere_truncate(mode)})
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, CohereOptions)

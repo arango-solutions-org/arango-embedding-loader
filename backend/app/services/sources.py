@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import io
 import os
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from itertools import islice
 from typing import IO, Any
 from urllib.parse import urlparse
@@ -29,12 +29,16 @@ class DocumentSource:
         bytes_total: int | None = None,
         total: int | None = None,
         close: Any = None,
+        reopen: Callable[[], DocumentSource] | None = None,
     ):
         self._it = iterator
         self._bytes_read = bytes_read
         self.bytes_total = bytes_total
         self.total = total
         self._close = close
+        #: Opens a fresh copy of the same documents, for a second pass. ``None`` when the
+        #: source can only be read once (streamed URLs).
+        self.reopen = reopen
 
     @property
     def bytes_read(self) -> int | None:
@@ -50,7 +54,11 @@ class DocumentSource:
 
 def list_source(documents: Iterable[dict[str, Any]]) -> DocumentSource:
     docs = list(documents)
-    return DocumentSource(iter(docs), total=len(docs))
+    return DocumentSource(
+        iter(docs),
+        total=len(docs),
+        reopen=lambda: list_source(docs),  # the scan does not modify documents
+    )
 
 
 def file_source(
@@ -77,6 +85,14 @@ def file_source(
         bytes_total=os.path.getsize(path),
         total=total,
         close=fh.close,
+        reopen=lambda: file_source(
+            path,
+            filename=filename,
+            fmt=fmt,
+            csv_options=csv_options,
+            json_path=json_path,
+            total=total,
+        ),
     )
 
 

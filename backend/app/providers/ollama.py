@@ -8,19 +8,21 @@ from typing import Any
 import httpx
 from pydantic import Field
 
-from app.providers.base import EmbeddingProvider, InputType, ModelInfo, ProviderOptions
-from app.providers.long_input import LongInputMode
+from app.providers.base import (
+    EmbeddingProvider,
+    InputType,
+    ModelInfo,
+    NativeTruncationOptions,
+    ProviderOptions,
+)
 
 
-class OllamaOptions(ProviderOptions):
+class OllamaOptions(NativeTruncationOptions):
     host: str = Field(
         default_factory=lambda: os.getenv("OLLAMA_HOST", "http://localhost:11434"),
         description="Ollama server URL. Defaults to $OLLAMA_HOST.",
     )
     keep_alive: str | None = Field(None, description="How long to keep the model loaded, e.g. 5m.")
-    truncate: bool = Field(
-        True, description="Set from the spec's `long_input` (off only for `error`)."
-    )
     timeout: float = Field(120.0, description="Request timeout in seconds.")
 
 
@@ -61,13 +63,6 @@ class OllamaProvider(EmbeddingProvider):
     def native_long_input(self, model: str) -> frozenset[str]:
         return frozenset({"truncate_end"})
 
-    def apply_long_input(
-        self, options: ProviderOptions, model: str, mode: LongInputMode
-    ) -> ProviderOptions:
-        # The context length depends on the model and the server's num_ctx: set the spec's
-        # `max_tokens` for the loader to apply other modes.
-        return options.model_copy(update={"truncate": mode != "error"})
-
     async def embed_batch(
         self,
         texts: list[str],
@@ -78,7 +73,14 @@ class OllamaProvider(EmbeddingProvider):
         input_type: InputType,
     ) -> list[list[float]]:
         assert isinstance(options, OllamaOptions)
-        body: dict[str, Any] = {"model": model, "input": texts, "truncate": options.truncate}
+        # Ollama truncates the end (at the model's context length, which depends on the server's
+        # num_ctx: set the spec's `max_tokens` for the loader to apply other modes). Every mode
+        # but `error` keeps it on as a backstop for estimated counts.
+        body: dict[str, Any] = {
+            "model": model,
+            "input": texts,
+            "truncate": options.long_input_mode != "error",
+        }
         if options.keep_alive:
             body["keep_alive"] = options.keep_alive
         async with httpx.AsyncClient(timeout=options.timeout) as client:

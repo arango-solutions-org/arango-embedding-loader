@@ -20,11 +20,11 @@ from app.models.profiles import Profile, WatcherState
 from app.services import profiles as profile_store
 from app.services.pipeline import (
     ResolvedSpec,
-    chunk_documents,
     embed_documents,
     resolve_specs,
+    write_chunks_first,
 )
-from app.services.writer import insert_batch, update_batch
+from app.services.writer import update_batch
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +64,16 @@ async def process_pending(
     docs: list[dict[str, Any]] = list(cursor)  # type: ignore[arg-type]
     if not docs:
         return 0, 0
-    outcomes = await embed_documents(docs, specs, store_metadata=True, only_pending=True)
+    # A text too long under `long_input: error` marks that document as failed
+    # (`<target>_meta.status: "error"`, so it leaves the queue) instead of failing the batch,
+    # which would retry the same documents forever.
+    outcomes = await embed_documents(
+        docs, specs, store_metadata=True, only_pending=True, errors_per_document=True
+    )
+    col = db.collection(collection)
+    # Chunks first: a document whose chunks fail is marked `status: "error"` and keeps any
+    # previous vector, instead of being left chunked without chunks.
+    await asyncio.to_thread(write_chunks_first, db, col, docs, outcomes, specs, store_metadata=True)
     updates: list[dict[str, Any]] = []
     for doc, outcome in zip(docs, outcomes, strict=True):
         update: dict[str, Any] = {"_key": doc["_key"]}
@@ -81,14 +90,8 @@ async def process_pending(
                 state.embedded += 1
             elif outcome.skipped:
                 state.skipped += 1
-    col = db.collection(collection)
     result = await asyncio.to_thread(update_batch, col, updates)
-    errors = len(result.errors)
-    chunks = chunk_documents(outcomes)
-    if chunks:
-        chunk_result = await asyncio.to_thread(insert_batch, col, chunks, "replace")
-        errors += len(chunk_result.errors)
-    return len(docs), errors
+    return len(docs), len(result.errors)
 
 
 class WatcherManager:

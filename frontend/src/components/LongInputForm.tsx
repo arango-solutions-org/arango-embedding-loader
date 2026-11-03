@@ -28,7 +28,7 @@ export function LongInputForm({
             {LONG_INPUT_MODES.map((m) => (
               <option key={m.value} value={m.value}>
                 {m.value}: {m.label}
-                {m.value === "truncate_end" ? " (default)" : ""}
+                {m.value === "chunk_docs" ? " (default)" : ""}
               </option>
             ))}
           </Select>
@@ -71,13 +71,13 @@ export function LongInputForm({
           </Field>
           <Field
             label="Characters per token"
-            hint="Used to estimate token counts for models without a local tokenizer."
+            hint="Used to estimate token counts for models without a local tokenizer. The default, 3, over-counts on purpose so pieces fit."
           >
             <Input
               type="number"
               min={0.1}
               step={0.1}
-              placeholder="4"
+              placeholder="3"
               value={value.tokenChars}
               onChange={(e) => set("tokenChars", e.target.value)}
             />

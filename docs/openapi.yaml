@@ -2062,10 +2062,58 @@ components:
           title: Include Vectors
           description: Return full vectors (otherwise first 8).
           default: false
+        long_input:
+          type: string
+          enum:
+          - truncate_end
+          - truncate_start
+          - truncate_middle
+          - chunk_mean
+          - chunk_docs
+          - skip
+          - error
+          title: Long Input
+          description: 'What to do with a text longer than the model''s token limit: `truncate_end` (keep
+            the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep the start
+            and the end), `chunk_mean` (embed overlapping chunks, store their mean), `chunk_docs` (store
+            each chunk as its own document, linked by `parent_key`), `skip` (don''t embed; status `skipped_too_long`)
+            or `error` (fail the job). Replaces the old `truncate`/`truncation` provider options, which
+            are still accepted.'
+          default: chunk_docs
+        chunk_overlap_tokens:
+          type: integer
+          minimum: 0.0
+          title: Chunk Overlap Tokens
+          description: Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the
+            nearest word. Values above half the token limit are capped at half the limit, so each chunk
+            starts at least half a chunk after the previous one.
+          default: 25
+        max_tokens:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Max Tokens
+          description: 'Advanced: token limit to apply. Defaults to the model''s limit, when known. Needed
+            for models whose limit the loader doesn''t know (e.g. Ollama).'
+        token_chars:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Token Chars
+          description: 'Advanced: characters per token, used to estimate token counts for models without
+            a local tokenizer. The default, 3, over-counts typical English (about 4) on purpose.'
+          default: 3.0
+        warn_on_long_input:
+          type: boolean
+          title: Warn On Long Input
+          description: Log each over-limit text as a warning; when off, at info level. With `error` it
+            is always logged as an error.
+          default: true
       type: object
       required:
       - texts
       title: EmbedTestRequest
+      description: Texts are embedded exactly as a load would embed them, including ``long_input``.
     EmbedTestResponse:
       properties:
         provider:
@@ -2080,6 +2128,7 @@ components:
         count:
           type: integer
           title: Count
+          description: Number of vectors (more than texts when chunked).
         elapsed_ms:
           type: number
           title: Elapsed Ms
@@ -2090,6 +2139,13 @@ components:
             type: array
           type: array
           title: Vectors
+          description: Every vector, in text order.
+        results:
+          items:
+            $ref: '#/components/schemas/EmbedTestResult'
+          type: array
+          title: Results
+          description: One per text, in order.
       type: object
       required:
       - provider
@@ -2098,7 +2154,35 @@ components:
       - count
       - elapsed_ms
       - vectors
+      - results
       title: EmbedTestResponse
+    EmbedTestResult:
+      properties:
+        status:
+          type: string
+          title: Status
+          description: '`embedded`, `chunked` (`chunk_docs`: one vector per chunk), `skipped_too_long`
+            or `skipped` (empty text).'
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+          description: The `<target>_meta` a load would store (token counts, truncation...).
+        vectors:
+          items:
+            items:
+              type: number
+            type: array
+          type: array
+          title: Vectors
+          description: One vector, one per chunk (`chunk_docs`), or none when skipped.
+      type: object
+      required:
+      - status
+      - meta
+      - vectors
+      title: EmbedTestResult
+      description: 'What a load would store for one text: its `<target>_meta` and its vector(s).'
     EmbeddingFieldSpec:
       properties:
         source_field:
@@ -2187,14 +2271,16 @@ components:
             the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep the start
             and the end), `chunk_mean` (embed overlapping chunks, store their mean), `chunk_docs` (store
             each chunk as its own document, linked by `parent_key`), `skip` (don''t embed; status `skipped_too_long`)
-            or `error` (fail the job).'
-          default: truncate_end
+            or `error` (fail the job). Replaces the old `truncate`/`truncation` provider options, which
+            are still accepted.'
+          default: chunk_docs
         chunk_overlap_tokens:
           type: integer
           minimum: 0.0
           title: Chunk Overlap Tokens
           description: Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the
-            nearest word. At most half the token limit.
+            nearest word. Values above half the token limit are capped at half the limit, so each chunk
+            starts at least half a chunk after the previous one.
           default: 25
         max_tokens:
           anyOf:
@@ -2209,8 +2295,8 @@ components:
           exclusiveMinimum: 0.0
           title: Token Chars
           description: 'Advanced: characters per token, used to estimate token counts for models without
-            a local tokenizer.'
-          default: 4.0
+            a local tokenizer. The default, 3, over-counts typical English (about 4) on purpose.'
+          default: 3.0
         warn_on_long_input:
           type: boolean
           title: Warn On Long Input

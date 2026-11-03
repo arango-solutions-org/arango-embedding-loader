@@ -534,7 +534,7 @@ export function LoadWizard() {
 
       {step === 2 && (
         <Card title="3 · Choose an embedding model">
-          <ModelPicker value={choice} onChange={setChoice} />
+          <ModelPicker value={choice} onChange={setChoice} longInput={longInput} />
           <LongInputForm value={longInput} onChange={setLongInput} />
           <Nav onBack={() => setStep(1)} onNext={() => setStep(3)} />
         </Card>

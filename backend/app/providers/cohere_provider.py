@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import Field, SecretStr
 
@@ -12,9 +12,9 @@ from app.providers.base import (
     EmbeddingProvider,
     InputType,
     ModelInfo,
+    NativeTruncationOptions,
     ProviderOptions,
 )
-from app.providers.long_input import LongInputMode
 
 
 def cohere_truncate(mode: str) -> str:
@@ -23,15 +23,12 @@ def cohere_truncate(mode: str) -> str:
     return {"truncate_start": "START", "error": "NONE"}.get(mode, "END")
 
 
-class CohereOptions(ProviderOptions):
+class CohereOptions(NativeTruncationOptions):
     api_key: SecretStr | None = Field(
         default_factory=lambda: SecretStr(v) if (v := os.getenv("COHERE_API_KEY")) else None,
         description="API key. Defaults to $COHERE_API_KEY.",
     )
     base_url: str | None = Field(None, description="Override API base URL.")
-    truncate: Literal["NONE", "START", "END"] = Field(
-        "END", description="Set from the spec's `long_input`; a value here is ignored."
-    )
     timeout: float = Field(60.0, description="Request timeout in seconds.")
 
 
@@ -58,11 +55,6 @@ class CohereProvider(EmbeddingProvider):
 
     def native_long_input(self, model: str) -> frozenset[str]:
         return frozenset({"truncate_end", "truncate_start"})
-
-    def apply_long_input(
-        self, options: ProviderOptions, model: str, mode: LongInputMode
-    ) -> ProviderOptions:
-        return options.model_copy(update={"truncate": cohere_truncate(mode)})
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, CohereOptions)
@@ -102,7 +94,7 @@ class CohereProvider(EmbeddingProvider):
             "model": model,
             "input_type": "search_document" if input_type == "document" else "search_query",
             "embedding_types": ["float"],
-            "truncate": options.truncate,
+            "truncate": cohere_truncate(options.long_input_mode),
         }
         if dimensions:
             kwargs["output_dimension"] = dimensions

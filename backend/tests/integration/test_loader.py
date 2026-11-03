@@ -161,7 +161,7 @@ def test_pubmedbert_customer_scenario(client, db):
 
 @pytest.mark.local
 def test_over_limit_inputs(client, db):
-    """Texts longer than the model limit: split into chunk documents, or stop the run."""
+    """Over-limit texts: split into chunk documents (the default), truncated, or the run stops."""
     pytest.importorskip("sentence_transformers")
     long_text = " ".join(f"token{i}" for i in range(600))  # well over MiniLM's 256 tokens
     spec = {
@@ -169,7 +169,6 @@ def test_over_limit_inputs(client, db):
         "target_field": "embedding",
         "provider": "sentence_transformers",
         "model": "sentence-transformers/all-MiniLM-L6-v2",
-        "long_input": "chunk_docs",
     }
     body = {
         "collection": "overrun",
@@ -187,6 +186,7 @@ def test_over_limit_inputs(client, db):
     parent = col.get("long")
     assert parent["embedding"] is None and parent["embedding_meta"]["status"] == "chunked"
     assert parent["embedding_meta"]["chunks"] == chunks
+    assert parent["embedding_meta"]["long_input"] == "chunk_docs"
     first = col.get("long_embedding_chunk_0")
     assert len(first["embedding"]) == 384 and first["text"] in long_text
     assert first["embedding_meta"]["parent_key"] == "long"
@@ -197,6 +197,34 @@ def test_over_limit_inputs(client, db):
     # Loading again replaces the chunks instead of failing on duplicate keys.
     again = client.post("/api/v1/load?wait=true", json=body | {"on_duplicate": "replace"}).json()
     assert again["status"] == "succeeded" and again["counts"]["failed"] == 0, again
+
+    # A shorter text, still over the limit, splits into fewer chunks: the extra chunk
+    # documents from the earlier split are removed.
+    shorter = " ".join(f"token{i}" for i in range(200))
+    docs = [{"id": "long", "text": shorter}, {"id": "short", "text": "hello"}]
+    fewer = client.post(
+        "/api/v1/load?wait=true", json=body | {"documents": docs, "on_duplicate": "replace"}
+    ).json()
+    assert fewer["status"] == "succeeded", fewer
+    new_count = col.get("long")["embedding_meta"]["chunks"]
+    assert 1 < new_count < chunks
+    assert fewer["result"]["stale_chunks_removed"] == chunks - new_count
+    assert col.has(f"long_embedding_chunk_{new_count - 1}")
+    assert not col.has(f"long_embedding_chunk_{new_count}")
+    chunks = new_count
+
+    # Re-embedding only missing vectors leaves the chunked original alone...
+    reembed = "/api/v1/collections/overrun/embed?wait=true"
+    job = client.post(reembed, json={"embeddings": [spec]}).json()
+    assert job["status"] == "succeeded", job
+    assert job["counts"]["embedded"] == 0 and job["result"]["chunked_unchanged"] == 1, job
+    # ...until the user edits it, e.g. after splitting it into their own chunks.
+    col.update({"_key": "long", "text": "a shorter version"})
+    job = client.post(reembed, json={"embeddings": [spec]}).json()
+    assert job["counts"]["embedded"] == 1 and "chunked_unchanged" not in job["result"], job
+    edited = col.get("long")
+    assert len(edited["embedding"]) == 384 and edited["embedding_meta"]["status"] == "embedded"
+    assert col.has("long_embedding_chunk_0")  # removing old chunks is up to the user
 
     report = client.post(
         "/api/v1/load?wait=true", json=body | {"collection": "overrun_scan", "analyze": True}
@@ -213,16 +241,105 @@ def test_over_limit_inputs(client, db):
     assert job["result"]["prescan"] == {"status": "failed"}
     assert job["counts"]["embedded"] == 0
 
-    # The default, truncate_end: one vector from the first tokens, truncation recorded.
-    del spec["long_input"]
-    job = client.post(
-        "/api/v1/load?wait=true", json=body | {"collection": "overrun_default"}
-    ).json()
+    # truncate_end: one vector from the first tokens, truncation recorded.
+    spec["long_input"] = "truncate_end"
+    job = client.post("/api/v1/load?wait=true", json=body | {"collection": "overrun_trunc"}).json()
     assert job["status"] == "succeeded" and job["counts"]["over_limit"] == 1, job
-    meta = db.collection("overrun_default").get("long")["embedding_meta"]
+    meta = db.collection("overrun_trunc").get("long")["embedding_meta"]
     assert meta["long_input"] == "truncate_end" and meta["truncated"] is True
     # At least the overflow is dropped (a little more when the cut moves back to a word start).
     assert meta["tokens_dropped"] >= meta["input_tokens"] - meta["max_tokens"] > 0
+
+
+@pytest.mark.local
+def test_reembed_with_chunks_in_key_order(client, db):
+    """Chunk keys can sort after other documents ("12_embedding_chunk_0" > "120"): a full
+    re-embed must not read back the chunks it just wrote, and `max_documents` with
+    `only_missing` must reach documents past the chunked ones."""
+    pytest.importorskip("sentence_transformers")
+    spec = {
+        "source_field": "text",
+        "target_field": "embedding",
+        "provider": "sentence_transformers",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+    }
+    long_text = " ".join(f"token{i}" for i in range(600))
+    body = {
+        "collection": "keyorder",
+        "key_field": "id",
+        "embeddings": [spec],
+        "documents": [{"id": "12", "text": long_text}, {"id": "120", "text": "short"}],
+    }
+    job = client.post("/api/v1/load?wait=true", json=body).json()
+    assert job["status"] == "succeeded", job
+    chunks = job["counts"]["chunks"]
+    assert chunks >= 2
+
+    reembed = "/api/v1/collections/keyorder/embed?wait=true"
+    full = client.post(
+        reembed, json={"embeddings": [spec], "only_missing": False, "batch_size": 1}
+    ).json()
+    assert full["status"] == "succeeded", full
+    assert full["counts"]["read"] == 2 and full["counts"]["embedded"] == 2, full
+    assert full["counts"]["chunks"] == chunks and full["total"] == 2
+    col = db.collection("keyorder")
+    assert col.get("12_embedding_chunk_0")["embedding_meta"]["parent_key"] == "12"
+
+    # A re-load that is ignored for the stored original leaves its chunks alone, even when
+    # the new text would split into fewer chunks.
+    last = f"12_embedding_chunk_{chunks - 1}"
+    before = col.get("12_embedding_chunk_0")["text"]
+    shorter = " ".join(f"token{i}" for i in range(150))
+    ignored = client.post(
+        "/api/v1/load?wait=true",
+        json=body | {"documents": [{"id": "12", "text": shorter}], "on_duplicate": "ignore"},
+    ).json()
+    assert ignored["status"] == "succeeded" and ignored["counts"]["chunks"] == 0, ignored
+    assert "stale_chunks_removed" not in ignored["result"]
+    assert col.get("12_embedding_chunk_0")["text"] == before and col.has(last)
+
+    col.insert_many([{"_key": "13", "text": "new one"}, {"_key": "14", "text": "new two"}])
+    first = client.post(
+        reembed, json={"embeddings": [spec], "max_documents": 1, "batch_size": 1}
+    ).json()
+    assert first["status"] == "succeeded" and first["counts"]["read"] == 1, first
+    assert col.get("13")["embedding"] and not col.get("14").get("embedding")
+
+
+def test_watcher_marks_long_text_and_carries_on(client, db):
+    """long_input: error in a watcher: the long document fails alone; the rest are embedded."""
+    profile = {
+        "embeddings": [FAKE | {"long_input": "error", "max_tokens": 5}],
+        "auto_watch": True,
+        "watch_interval_s": 1,
+    }
+    assert client.put("/api/v1/collections/watched/profile", json=profile).status_code == 200
+    col = db.collection("watched")
+    col.insert_many(
+        [
+            {"_key": "long", "text": " ".join(f"w{i}" for i in range(50))},
+            {"_key": "short", "text": "hello"},
+        ]
+    )
+    for _ in range(40):
+        if col.get("short").get("embedding") and col.get("long").get("embedding_meta"):
+            break
+        time.sleep(0.5)
+    long_meta = col.get("long")["embedding_meta"]
+    assert long_meta["status"] == "error" and long_meta["reason"] == "too long"
+    assert len(col.get("short")["embedding"]) == 384
+
+    # Later documents are not held up behind the failed one.
+    col.insert({"_key": "later", "text": "inserted after"})
+    for _ in range(40):
+        if col.get("later").get("embedding"):
+            break
+        time.sleep(0.5)
+    assert len(col.get("later")["embedding"]) == 384
+    status = client.get("/api/v1/collections/watched/profile").json()
+    assert status["pending_documents"] == 0
+    assert status["watcher"]["running"] and status["watcher"]["failed"] >= 1
+    assert client.delete("/api/v1/collections/watched/profile").status_code == 204
 
 
 def test_platform_token_from_gateway(platform_client, test_db, db):

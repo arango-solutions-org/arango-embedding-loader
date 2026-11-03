@@ -7,7 +7,9 @@ import {
   DEFAULT_MODEL_CHOICE,
   defaultTarget,
   formatBytes,
+  LONG_INPUT_DEFAULTS,
   longInputFields,
+  longInputRequest,
 } from "./spec";
 
 describe("spec helpers", () => {
@@ -25,7 +27,7 @@ describe("spec helpers", () => {
         preset: "pubmedbert",
         provider_options: {},
         on_missing: "skip",
-        long_input: "truncate_end",
+        long_input: "chunk_docs",
         warn_on_long_input: true,
         chunk_overlap_tokens: 25,
       },
@@ -69,10 +71,10 @@ describe("long input", () => {
       DEFAULT_MODEL_CHOICE,
       "skip",
       "embedding",
-      { mode: "chunk_docs", overlap: "10", maxTokens: "", tokenChars: "3.5", warn: false },
+      { mode: "chunk_mean", overlap: "10", maxTokens: "", tokenChars: "3.5", warn: false },
     );
     expect(specs[0]).toMatchObject({
-      long_input: "chunk_docs",
+      long_input: "chunk_mean",
       chunk_overlap_tokens: 10,
       token_chars: 3.5,
       warn_on_long_input: false,
@@ -80,11 +82,19 @@ describe("long input", () => {
     expect(specs[0]).not.toHaveProperty("max_tokens");
   });
 
-  it("defaults to truncate_end with 25 overlap tokens", () => {
+  it("defaults to chunk_docs with 25 overlap tokens", () => {
     expect(longInputFields(DEFAULT_LONG_INPUT)).toEqual({
-      long_input: "truncate_end",
+      long_input: "chunk_docs",
       warn_on_long_input: true,
       chunk_overlap_tokens: 25,
     });
+  });
+
+  it("fills every field for the provider test request", () => {
+    expect(longInputRequest({ ...DEFAULT_LONG_INPUT, overlap: "" })).toEqual({
+      ...LONG_INPUT_DEFAULTS,
+      max_tokens: null,
+    });
+    expect(longInputRequest({ ...DEFAULT_LONG_INPUT, mode: "error" }).long_input).toBe("error");
   });
 });

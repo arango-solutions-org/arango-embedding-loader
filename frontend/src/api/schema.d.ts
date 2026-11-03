@@ -570,7 +570,10 @@ export interface components {
             /** Error */
             error: string;
         };
-        /** EmbedTestRequest */
+        /**
+         * EmbedTestRequest
+         * @description Texts are embedded exactly as a load would embed them, including ``long_input``.
+         */
         EmbedTestRequest: {
             /**
              * Texts
@@ -599,6 +602,36 @@ export interface components {
              * @default false
              */
             include_vectors: boolean;
+            /**
+             * Long Input
+             * @description What to do with a text longer than the model's token limit: `truncate_end` (keep the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep the start and the end), `chunk_mean` (embed overlapping chunks, store their mean), `chunk_docs` (store each chunk as its own document, linked by `parent_key`), `skip` (don't embed; status `skipped_too_long`) or `error` (fail the job). Replaces the old `truncate`/`truncation` provider options, which are still accepted.
+             * @default chunk_docs
+             * @enum {string}
+             */
+            long_input: "truncate_end" | "truncate_start" | "truncate_middle" | "chunk_mean" | "chunk_docs" | "skip" | "error";
+            /**
+             * Chunk Overlap Tokens
+             * @description Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the nearest word. Values above half the token limit are capped at half the limit, so each chunk starts at least half a chunk after the previous one.
+             * @default 25
+             */
+            chunk_overlap_tokens: number;
+            /**
+             * Max Tokens
+             * @description Advanced: token limit to apply. Defaults to the model's limit, when known. Needed for models whose limit the loader doesn't know (e.g. Ollama).
+             */
+            max_tokens?: number | null;
+            /**
+             * Token Chars
+             * @description Advanced: characters per token, used to estimate token counts for models without a local tokenizer. The default, 3, over-counts typical English (about 4) on purpose.
+             * @default 3
+             */
+            token_chars: number;
+            /**
+             * Warn On Long Input
+             * @description Log each over-limit text as a warning; when off, at info level. With `error` it is always logged as an error.
+             * @default true
+             */
+            warn_on_long_input: boolean;
         };
         /** EmbedTestResponse */
         EmbedTestResponse: {
@@ -608,11 +641,45 @@ export interface components {
             model: string;
             /** Dimension */
             dimension: number;
-            /** Count */
+            /**
+             * Count
+             * @description Number of vectors (more than texts when chunked).
+             */
             count: number;
             /** Elapsed Ms */
             elapsed_ms: number;
-            /** Vectors */
+            /**
+             * Vectors
+             * @description Every vector, in text order.
+             */
+            vectors: number[][];
+            /**
+             * Results
+             * @description One per text, in order.
+             */
+            results: components["schemas"]["EmbedTestResult"][];
+        };
+        /**
+         * EmbedTestResult
+         * @description What a load would store for one text: its `<target>_meta` and its vector(s).
+         */
+        EmbedTestResult: {
+            /**
+             * Status
+             * @description `embedded`, `chunked` (`chunk_docs`: one vector per chunk), `skipped_too_long` or `skipped` (empty text).
+             */
+            status: string;
+            /**
+             * Meta
+             * @description The `<target>_meta` a load would store (token counts, truncation...).
+             */
+            meta: {
+                [key: string]: unknown;
+            };
+            /**
+             * Vectors
+             * @description One vector, one per chunk (`chunk_docs`), or none when skipped.
+             */
             vectors: number[][];
         };
         /**
@@ -676,14 +743,14 @@ export interface components {
             on_missing: "skip" | "null" | "error";
             /**
              * Long Input
-             * @description What to do with a text longer than the model's token limit: `truncate_end` (keep the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep the start and the end), `chunk_mean` (embed overlapping chunks, store their mean), `chunk_docs` (store each chunk as its own document, linked by `parent_key`), `skip` (don't embed; status `skipped_too_long`) or `error` (fail the job).
-             * @default truncate_end
+             * @description What to do with a text longer than the model's token limit: `truncate_end` (keep the first tokens), `truncate_start` (keep the last tokens), `truncate_middle` (keep the start and the end), `chunk_mean` (embed overlapping chunks, store their mean), `chunk_docs` (store each chunk as its own document, linked by `parent_key`), `skip` (don't embed; status `skipped_too_long`) or `error` (fail the job). Replaces the old `truncate`/`truncation` provider options, which are still accepted.
+             * @default chunk_docs
              * @enum {string}
              */
             long_input: "truncate_end" | "truncate_start" | "truncate_middle" | "chunk_mean" | "chunk_docs" | "skip" | "error";
             /**
              * Chunk Overlap Tokens
-             * @description Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the nearest word. At most half the token limit.
+             * @description Tokens shared by consecutive chunks (`chunk_mean`, `chunk_docs`), rounded to the nearest word. Values above half the token limit are capped at half the limit, so each chunk starts at least half a chunk after the previous one.
              * @default 25
              */
             chunk_overlap_tokens: number;
@@ -694,8 +761,8 @@ export interface components {
             max_tokens?: number | null;
             /**
              * Token Chars
-             * @description Advanced: characters per token, used to estimate token counts for models without a local tokenizer.
-             * @default 4
+             * @description Advanced: characters per token, used to estimate token counts for models without a local tokenizer. The default, 3, over-counts typical English (about 4) on purpose.
+             * @default 3
              */
             token_chars: number;
             /**

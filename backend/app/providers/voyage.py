@@ -13,20 +13,27 @@ from app.providers.base import (
     EmbeddingProvider,
     InputType,
     ModelInfo,
+    NativeTruncationOptions,
     ProviderOptions,
 )
-from app.providers.long_input import HFTokenizer, LongInputMode, Tokenizer
+from app.providers.long_input import HFTokenizer, Tokenizer
 
 log = logging.getLogger(__name__)
 
 
-class VoyageOptions(ProviderOptions):
+class VoyageOptions(NativeTruncationOptions):
     api_key: SecretStr | None = Field(
         default_factory=lambda: SecretStr(v) if (v := os.getenv("VOYAGE_API_KEY")) else None,
         description="API key. Defaults to $VOYAGE_API_KEY.",
     )
-    truncation: bool = Field(True, description="Truncate inputs longer than the model context.")
     timeout: float = Field(60.0, description="Request timeout in seconds.")
+
+
+#: Most tokens per request, summed over its texts (Voyage's documented limits).
+_BATCH_TOKENS = {
+    "voyage-3.5-lite": 1_000_000,
+    "voyage-3.5": 320_000,
+}
 
 
 class VoyageProvider(EmbeddingProvider):
@@ -72,12 +79,8 @@ class VoyageProvider(EmbeddingProvider):
     def native_long_input(self, model: str) -> frozenset[str]:
         return frozenset({"truncate_end"})
 
-    def apply_long_input(
-        self, options: ProviderOptions, model: str, mode: LongInputMode
-    ) -> ProviderOptions:
-        # Voyage truncates the end, or rejects long inputs. Every mode but `error` keeps
-        # truncation on as a backstop for estimated counts.
-        return options.model_copy(update={"truncation": mode != "error"})
+    def batch_token_limit(self, model: str) -> int | None:
+        return _BATCH_TOKENS.get(model, 120_000)
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, VoyageOptions)
@@ -111,7 +114,9 @@ class VoyageProvider(EmbeddingProvider):
         kwargs: dict[str, Any] = {
             "model": model,
             "input_type": input_type,
-            "truncation": options.truncation,
+            # Voyage truncates the end, or rejects long inputs. Every mode but `error` keeps
+            # truncation on as a backstop for estimated counts.
+            "truncation": options.long_input_mode != "error",
         }
         if dimensions:
             kwargs["output_dimension"] = dimensions

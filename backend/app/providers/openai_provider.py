@@ -60,6 +60,8 @@ class OpenAIProvider(EmbeddingProvider):
     requires = ("openai",)
     install_hint = "uv sync --extra openai"
     max_batch_size = 256
+    #: OpenAI rejects a request with more than 300,000 tokens over all its inputs.
+    max_batch_tokens = 300_000
     default_model = "text-embedding-3-small"
     supports_dimensions = True
     known_models = (

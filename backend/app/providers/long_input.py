@@ -26,7 +26,33 @@ LongInputMode = Literal[
     "error",
 ]
 TRUNCATE_MODES = ("truncate_end", "truncate_start", "truncate_middle")
-DEFAULT_TOKEN_CHARS = 4.0
+#: Characters per token for estimated counts. English averages about 4; 3 over-counts on
+#: purpose, so estimated pieces stay under the real limit for most text.
+DEFAULT_TOKEN_CHARS = 3.0
+
+#: Old provider options that set the provider's own truncation. ``long_input`` replaces them.
+LEGACY_TRUNCATE_OPTIONS = ("truncate", "truncation")
+
+
+def legacy_long_input(value: Any) -> LongInputMode | None:
+    """The ``long_input`` mode for an old ``truncate``/``truncation`` provider option value.
+
+    Cohere and Bedrock took ``END``/``START``/``NONE``; Voyage and Ollama took a boolean.
+    ``None`` when the value is not recognized.
+    """
+    if isinstance(value, bool):
+        return "truncate_end" if value else "error"
+    if isinstance(value, str):
+        mapped: dict[str, LongInputMode] = {
+            "END": "truncate_end",
+            "START": "truncate_start",
+            "NONE": "error",
+            "TRUE": "truncate_end",
+            "FALSE": "error",
+        }
+        return mapped.get(value.strip().upper())
+    return None
+
 
 _WORD = re.compile(r"\S+")
 
@@ -35,7 +61,7 @@ _WORD = re.compile(r"\S+")
 class LongInput:
     """The spec's long-input settings, as passed to :meth:`EmbeddingProvider.plan_inputs`."""
 
-    mode: LongInputMode = "truncate_end"
+    mode: LongInputMode = "chunk_docs"
     chunk_overlap_tokens: int = 25
     max_tokens: int | None = None
     token_chars: float = DEFAULT_TOKEN_CHARS
@@ -56,6 +82,8 @@ class TextPlan:
     combine: Literal["single", "mean", "split"] = "single"
     action: Literal["embed", "skip", "error"] = "embed"
     weights: list[int] | None = None
+    #: Tokens in each of ``pieces`` (estimated for estimated counts); used to size requests.
+    piece_tokens: list[int] = field(default_factory=list)
     #: The text is longer than the model's limit.
     overrun: bool = False
     warn: bool = False
@@ -190,7 +218,7 @@ def plan_text(
         "token_count": "exact" if exact else "estimated",
     }
     if limit is None or n <= limit:
-        return TextPlan(pieces=[text], stats=stats)
+        return TextPlan(pieces=[text], piece_tokens=[n], stats=stats)
 
     plan = TextPlan(pieces=[], overrun=True, warn=settings.warn, stats=stats)
     if mode in ("error", "skip"):
@@ -200,6 +228,7 @@ def plan_text(
         return plan
     if mode in native:
         plan.pieces = [text]
+        plan.piece_tokens = [limit]  # the provider cuts the rest
         stats.update(truncated=True, tokens_dropped=n - limit)
         return plan
 
@@ -222,16 +251,19 @@ def plan_text(
     if mode == "truncate_end":
         end = at_most(limit, 0)
         plan.pieces = [span(0, end)]
+        plan.piece_tokens = [end]
         stats.update(truncated=True, tokens_dropped=n - end)
     elif mode == "truncate_start":
         start = at_least(n - limit, n)
         plan.pieces = [span(start, n)]
+        plan.piece_tokens = [n - start]
         stats.update(truncated=True, tokens_dropped=start)
     elif mode == "truncate_middle":
         head = at_most(max(1, limit // 2), 0)
         # One token of the budget goes to the line break that joins the two halves.
         tail = at_least(n - max(1, limit - head - 1), n)
         plan.pieces = [span(0, head) + "\n" + span(tail, n)]
+        plan.piece_tokens = [head + 1 + n - tail]
         stats.update(truncated=True, tokens_dropped=tail - head)
     else:  # chunk_mean / chunk_docs
         overlap = min(max(0, settings.chunk_overlap_tokens), limit // 2)
@@ -253,6 +285,7 @@ def plan_text(
             start = nxt
         plan.pieces = [span(a, b) for a, b in bounds]
         plan.weights = [b - a for a, b in bounds]
+        plan.piece_tokens = list(plan.weights)
         plan.combine = "mean" if mode == "chunk_mean" else "split"
         stats["chunks"] = len(bounds)
     return plan

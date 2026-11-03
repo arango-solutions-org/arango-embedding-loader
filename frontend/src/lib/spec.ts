@@ -49,7 +49,7 @@ export interface LongInputSettings {
 }
 
 export const DEFAULT_LONG_INPUT: LongInputSettings = {
-  mode: "truncate_end",
+  mode: "chunk_docs",
   overlap: "25",
   maxTokens: "",
   tokenChars: "",
@@ -67,6 +67,19 @@ export function longInputFields(s: LongInputSettings): Partial<EmbeddingFieldSpe
     ...(num(s.maxTokens) ? { max_tokens: num(s.maxTokens) } : {}),
     ...(num(s.tokenChars) ? { token_chars: num(s.tokenChars) } : {}),
   };
+}
+
+/** Server defaults for the long-input fields (see `EmbeddingFieldSpec`). */
+export const LONG_INPUT_DEFAULTS = {
+  long_input: "chunk_docs" as LongInputMode,
+  chunk_overlap_tokens: 25,
+  token_chars: 3,
+  warn_on_long_input: true,
+};
+
+/** Every long-input field, defaults filled in: for requests whose generated type needs them all. */
+export function longInputRequest(s: LongInputSettings) {
+  return { ...LONG_INPUT_DEFAULTS, max_tokens: null, ...longInputFields(s) };
 }
 
 export function defaultTarget(path: string, isOnly: boolean): string {

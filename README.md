@@ -188,7 +188,8 @@ becomes `error`, with a deprecation warning in the log. When both are set, `long
 scripts). Requests are sized to the provider's per-request token limit where it has one (OpenAI,
 Voyage). If the provider still rejects a request as too long, the loader sends each text on its
 own, and a text the provider rejects is planned again against 70% of the previous limit, up to six
-times, until it fits. Its `<target>_meta.max_tokens` then shows the limit used and
+times, until it fits. A rate limit is never taken for a length error, even when its message
+mentions tokens. Its `<target>_meta.max_tokens` then shows the limit used and
 `max_tokens_reduced_from` the original one. With `error`, the rejection fails the job. If the
 provider still rejects the text after six attempts, the load fails; the watcher instead marks
 that document `status: "error"` and carries on.
@@ -279,6 +280,17 @@ ArangoDB has no triggers and doesn't call models itself, so the loader provides 
   under `on_missing: error`) is marked
   `<target>_meta.status: "error"` and logged, and the watcher carries on with the others. It
   doesn't see later edits to documents it has already processed; run a re-embed for those.
+- **When a batch fails.** The watcher embeds documents in batches. If a batch fails with any
+  error (provider errors are retried first), the watcher checks that each provider still embeds
+  a tiny text. If it doesn't, the provider is treated as down: nothing is marked, and the batch
+  is retried later with backoff (up to 5 minutes). If it does, each document is embedded on its
+  own. One that still fails is marked `status: "error"` (`reason: "embedding failed"`, with the
+  message in `error`) and the others are stored, so one bad document can't hold up the queue.
+  Good documents aren't marked for the provider's problems. Rate limits, timeouts, connection
+  and auth errors (in the batch or in any single document) mean the provider is the problem:
+  nothing is marked and the batch is retried later. The same goes when every document of a
+  batch fails on its own. A document marked this way has no vector, so a re-embed with
+  `only_missing` tries it again.
 
 Profiles are stored in the `embedding_loader_profiles` collection in the same database. Secrets
 in `provider_options` are never persisted. Configure API keys for profiles through server

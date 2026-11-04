@@ -380,6 +380,46 @@ def test_watcher_marks_long_text_and_carries_on(client, db):
     assert client.delete("/api/v1/collections/watched/profile").status_code == 204
 
 
+def test_watcher_isolates_a_document_the_provider_fails(client, db):
+    """A provider that answers one document with a generic error: that document is marked
+    failed, the rest of its batch and later documents are embedded."""
+    from app.providers.registry import register_provider
+    from tests.unit.test_watcher import PickyProvider
+
+    register_provider(PickyProvider)
+    profile = {
+        "embeddings": [
+            {"source_field": "text", "target_field": "embedding", "provider": "picky_test"}
+        ],
+        "auto_watch": True,
+        "watch_interval_s": 1,
+    }
+    assert client.put("/api/v1/collections/picky/profile", json=profile).status_code == 200
+    col = db.collection("picky")
+    col.insert_many(
+        [{"_key": f"ok{i}", "text": f"fine {i}"} for i in range(5)]
+        + [{"_key": "bad", "text": "a poison pill"}]
+    )
+    for _ in range(40):
+        if col.get("bad").get("embedding_meta") and col.get("ok4").get("embedding"):
+            break
+        time.sleep(0.5)
+    meta = col.get("bad")["embedding_meta"]
+    assert meta["status"] == "error" and meta["reason"] == "embedding failed", meta
+    assert "500 Internal Server Error" in meta["error"]
+    assert all(col.get(f"ok{i}")["embedding"] == [2.0, 1.0] for i in range(5))
+
+    col.insert({"_key": "later", "text": "inserted after"})
+    for _ in range(40):
+        if col.get("later").get("embedding"):
+            break
+        time.sleep(0.5)
+    assert col.get("later")["embedding"] == [2.0, 1.0]
+    status = client.get("/api/v1/collections/picky/profile").json()
+    assert status["pending_documents"] == 0 and status["watcher"]["failed"] >= 1
+    assert client.delete("/api/v1/collections/picky/profile").status_code == 204
+
+
 def test_platform_token_from_gateway(platform_client, test_db, db):
     """Signed in with the forwarded JWT only: the server's own password is wrong."""
     info = platform_client.get("/api/v1/connection").json()

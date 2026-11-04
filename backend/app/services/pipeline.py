@@ -158,6 +158,13 @@ def _is_pending(doc: dict[str, Any], spec: ResolvedSpec) -> bool:
     return get_path(doc, f"{spec.meta}.status") is None
 
 
+def mark_failed(doc: dict[str, Any], specs: list[ResolvedSpec], reason: str, message: str) -> None:
+    """Mark every field of ``doc`` not yet processed as failed (``status: "error"``)."""
+    for spec in specs:
+        if _is_pending(doc, spec):
+            set_path(doc, spec.meta, _meta(spec, "error", reason=reason, error=message))
+
+
 def text_hash(text: str) -> str:
     return hashlib.sha256(text.encode()).hexdigest()
 

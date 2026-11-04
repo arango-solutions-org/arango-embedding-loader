@@ -8,6 +8,7 @@ index on ``<target>_meta.status`` keeps the lookup cheap on large collections.
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -17,10 +18,13 @@ from arango.database import StandardDatabase
 from app.arango import ArangoConnection, get_database
 from app.ingest.text import split_path
 from app.models.profiles import Profile, WatcherState
+from app.providers.base import ProviderError
 from app.services import profiles as profile_store
 from app.services.pipeline import (
+    DocOutcome,
     ResolvedSpec,
     embed_documents,
+    mark_failed,
     resolve_specs,
     write_chunks_first,
 )
@@ -64,12 +68,9 @@ async def process_pending(
     docs: list[dict[str, Any]] = list(cursor)  # type: ignore[arg-type]
     if not docs:
         return 0, 0
-    # A text too long under `long_input: error` marks that document as failed
-    # (`<target>_meta.status: "error"`, so it leaves the queue) instead of failing the batch,
-    # which would retry the same documents forever.
-    outcomes = await embed_documents(
-        docs, specs, store_metadata=True, only_pending=True, errors_per_document=True
-    )
+    # A document that can't be embedded is marked failed (`<target>_meta.status: "error"`, so
+    # it leaves the queue) instead of failing the batch, which would retry it forever.
+    docs, outcomes = await embed_isolating(docs, specs)
     col = db.collection(collection)
     # Chunks first: a document whose chunks fail is marked `status: "error"` and keeps any
     # previous vector, instead of being left chunked without chunks.
@@ -92,6 +93,129 @@ async def process_pending(
                 state.skipped += 1
     result = await asyncio.to_thread(update_batch, col, updates)
     return len(docs), len(result.errors)
+
+
+async def _provider_works(specs: list[ResolvedSpec]) -> bool:
+    """Every spec's provider embeds a tiny text: an error is not a provider outage."""
+    try:
+        for spec in specs:
+            await spec.provider.embed(
+                ["ok"],
+                model=spec.model,
+                options=spec.options,
+                dimensions=spec.dimensions,
+                max_attempts=1,
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "Provider check failed (%s: %s); treating it as an outage", type(exc).__name__, exc
+        )
+        return False
+    return True
+
+
+#: Errors that say nothing about a document's content: the provider is unavailable, limiting
+#: requests or rejecting the credentials. They never mark a document as failed.
+_OUTAGE_STATUS = frozenset({401, 403, 408, 429, 502, 503, 504})
+_OUTAGE_NAMES = (
+    "RateLimit",
+    "Throttl",
+    "TooManyRequests",
+    "Timeout",
+    "ServiceUnavailable",
+    "Connection",
+    "ConnectError",
+    "ReadError",
+    "RemoteProtocolError",
+    "Authentication",
+    "PermissionDenied",
+)
+
+
+def is_outage(exc: BaseException) -> bool:
+    """``exc``, or an error it was raised from, is about the provider, not the input."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        # A ProviderError's own status_code is the loader's HTTP status, not the provider's.
+        status = None if isinstance(cur, ProviderError) else getattr(cur, "status_code", None)
+        status = status or getattr(getattr(cur, "response", None), "status_code", None)
+        if isinstance(status, int) and status in _OUTAGE_STATUS:
+            return True
+        if any(n in type(cur).__name__ for n in _OUTAGE_NAMES):
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
+async def embed_isolating(
+    docs: list[dict[str, Any]], specs: list[ResolvedSpec]
+) -> tuple[list[dict[str, Any]], list[DocOutcome]]:
+    """Embed ``docs`` as one batch; if that fails, find the documents that cause it.
+
+    Any error in the batch (from the provider, a tokenizer, a template...) leads to a check
+    that each provider still embeds a tiny text. If it doesn't, the provider is down: the
+    error is raised and the watcher backs off and retries the batch later. If it does, each
+    document is embedded on its own; one that still fails, with any error, is put back as it
+    was and marked ``<target>_meta.status: "error"`` (``reason: "embedding failed"``), and the
+    others are stored. Returns the documents (copies, after a fallback) and their outcomes.
+
+    Good documents are not marked failed for the provider's problems: an outage error
+    (:func:`is_outage`: rate limits, timeouts, connection or auth errors), in the batch or in
+    any single document, is raised and nothing is marked; and if every document of a batch of
+    two or more fails on its own, the last error is raised instead.
+    """
+    originals = copy.deepcopy(docs)
+    try:
+        outcomes = await embed_documents(
+            docs, specs, store_metadata=True, only_pending=True, errors_per_document=True
+        )
+        return docs, outcomes
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        batch_error = exc
+    log.warning(
+        "Embedding a batch of %d document(s) failed (%s: %s); checking the provider",
+        len(originals),
+        type(batch_error).__name__,
+        batch_error,
+    )
+    if is_outage(batch_error) or not await _provider_works(specs):
+        raise batch_error
+    out_docs: list[dict[str, Any]] = []
+    out: list[DocOutcome] = []
+    last_error: Exception = batch_error
+    raised = 0
+    for doc in originals:
+        attempt = copy.deepcopy(doc)
+        try:
+            (outcome,) = await embed_documents(
+                [attempt], specs, store_metadata=True, only_pending=True, errors_per_document=True
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - any error marks this document only
+            if is_outage(exc):
+                raise
+            last_error = exc
+            raised += 1
+            attempt = doc
+            message = f"{type(exc).__name__}: {exc}"
+            mark_failed(attempt, specs, "embedding failed", message)
+            outcome = DocOutcome(error=f"Document {doc.get('_key')!r}: {message}")
+            log.error("Watcher could not embed %r: %s", doc.get("_key"), message)
+        out_docs.append(attempt)
+        out.append(outcome)
+    if len(originals) > 1 and raised == len(originals):
+        log.warning(
+            "Every document of the batch failed on its own; treating it as a provider problem"
+        )
+        raise last_error
+    return out_docs, out
 
 
 class WatcherManager:

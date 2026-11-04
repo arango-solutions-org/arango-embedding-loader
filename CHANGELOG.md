@@ -31,6 +31,8 @@ On the Arango Platform the app connects as the signed-in user. Users no longer e
 - Long words and text without spaces (Chinese, Japanese, base64, minified JSON, long URLs) are cut inside the word when no word boundary is near enough, so estimated counts can truncate and chunk them.
 - A full re-embed processes an original before its chunk documents, so an edited original's chunks get vectors of their new text.
 - The watcher marks a document `status: "error"` when the provider keeps rejecting its text as too long after every smaller attempt, instead of retrying the batch forever.
+- When a watcher batch fails with any error, the watcher checks the provider with a tiny text. If the provider works, each document is embedded on its own, and only those that still fail are marked `status: "error"` (`reason: "embedding failed"`). If it doesn't, the batch is retried later as before. Rate limits, timeouts, connection and auth errors, or every document failing on its own, mark nothing.
+- A rate-limit error whose message mentions tokens is no longer taken for an input that is too long, so texts aren't cut smaller for it.
 - Re-embeds with `only_missing` skip originals split by `chunk_docs` whose chunks are current (same text, model and `long_input`), even though their vector is `null`. Editing the original re-embeds it. The job's `result.chunked_unchanged` counts the originals skipped.
 
 ### Added

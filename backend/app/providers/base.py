@@ -155,6 +155,22 @@ _TOO_LONG_MARKERS = (
 )
 
 
+def _is_rate_limit(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = (
+            None if isinstance(current, ProviderError) else getattr(current, "status_code", None)
+        )
+        status = status or getattr(getattr(current, "response", None), "status_code", None)
+        name = type(current).__name__
+        if status == 429 or any(n in name for n in ("RateLimit", "Throttl", "TooManyRequests")):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def default_is_retryable(exc: BaseException) -> bool:
     status = getattr(exc, "status_code", None) or getattr(
         getattr(exc, "response", None), "status_code", None
@@ -259,7 +275,13 @@ class EmbeddingProvider(ABC):
         return self.max_batch_tokens
 
     def is_input_too_long(self, exc: BaseException) -> bool:
-        """``exc`` is the provider rejecting an input (or request) for having too many tokens."""
+        """``exc`` is the provider rejecting an input (or request) for having too many tokens.
+
+        A rate limit is never one, even when its message talks about tokens ("too many tokens
+        per minute"): shrinking the input would not help.
+        """
+        if _is_rate_limit(exc):
+            return False
         seen: set[int] = set()
         current: BaseException | None = exc
         while current is not None and id(current) not in seen:

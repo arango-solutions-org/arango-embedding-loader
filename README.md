@@ -173,8 +173,11 @@ Only `truncate_end` and `truncate_start` can be handed over, and only to APIs wi
 option (Cohere's `truncate: END/START`, Voyage's and Ollama's on/off truncation). No API can
 truncate the middle or chunk. When the API truncates, the loader sends the whole text and the API
 cuts it with its own exact count, which matters where the loader's count is an estimate. `error`
-turns the API's truncation off; every other mode leaves it on as a backstop. Pieces are always cut
-on word boundaries.
+turns the API's truncation off; every other mode leaves it on as a backstop. Pieces are cut on
+word boundaries, unless the nearest one would drop more than half of what fits. A single word
+longer than that (text without spaces such as Chinese or Japanese, base64, minified JSON, long
+URLs) is then cut inside the word; with estimated counts, by characters (about `token_chars` per
+token).
 
 The provider options `truncate` (Cohere, Bedrock, Ollama) and `truncation` (Voyage)
 are replaced by `long_input` and no longer listed. They are still accepted: when `long_input` is
@@ -186,7 +189,9 @@ scripts). Requests are sized to the provider's per-request token limit where it 
 Voyage). If the provider still rejects a request as too long, the loader sends each text on its
 own, and a text the provider rejects is planned again against 70% of the previous limit, up to six
 times, until it fits. Its `<target>_meta.max_tokens` then shows the limit used and
-`max_tokens_reduced_from` the original one. With `error`, the rejection fails the job.
+`max_tokens_reduced_from` the original one. With `error`, the rejection fails the job. If the
+provider still rejects the text after six attempts, the load fails; the watcher instead marks
+that document `status: "error"` and carries on.
 
 **What's recorded.** Every document's `<target>_meta` (for example `embedding_meta`) records
 `input_tokens`, `truncated` (`true`/`false`), `tokens_dropped` and `chunks`, plus `max_tokens`,
@@ -209,7 +214,10 @@ FOR c IN pubmed
 
 Chunks are written with overwrite, so re-running a load or re-embed replaces them. A chunk
 document's other fields are never embedded, and a chunk embedded again on its own (a full
-re-embed) keeps its `parent_key`, `chunk_index` and `chunk_count`. If a text is
+re-embed) keeps its `parent_key`, `chunk_index` and `chunk_count`. In a full re-embed
+(`only_missing: false`), an original is processed before its chunk documents: if it is split
+again, its chunks are rewritten from the current text, and the old chunk documents are not
+embedded again on their own. If a text is
 split into fewer chunks than before, the extra chunk documents from the earlier split are deleted
 (`result.stale_chunks_removed`). Only documents that are certainly those chunks are deleted: the
 key is exactly `<parent _key>_<target>_chunk_<n>` past the new count, and the document's
@@ -267,7 +275,8 @@ ArangoDB has no triggers and doesn't call models itself, so the loader provides 
   `<target>_meta.status`, using a persistent index, and embeds them. This covers documents written by
   `arangoimport`, drivers or the web UI. Watchers restart with the server for profiles in the
   default database. A document the watcher can't embed (a text too long under
-  `long_input: error`, or a missing source under `on_missing: error`) is marked
+  `long_input: error`, a text the provider keeps rejecting as too long, or a missing source
+  under `on_missing: error`) is marked
   `<target>_meta.status: "error"` and logged, and the watcher carries on with the others. It
   doesn't see later edits to documents it has already processed; run a re-embed for those.
 

@@ -110,12 +110,19 @@ class Tokenizer:
 
 
 def _wordwise(text: str, count: Callable[[str], int]) -> Tokens:
-    """Tokens per whitespace-separated word; every token of a word carries the word's span."""
+    """Tokens per whitespace-separated word, counted with ``count``.
+
+    The word's characters are shared out evenly among its tokens, so a word longer than the
+    limit (text without spaces: Chinese or Japanese, base64, minified JSON, long URLs) can still
+    be cut, by characters, when no word boundary is near enough.
+    """
     spans: list[tuple[int, int]] = []
     starts: list[bool] = []
     for m in _WORD.finditer(text):
+        a, b = m.span()
         n = max(1, count(m.group()))
-        spans.extend([m.span()] * n)
+        edges = [a + (b - a) * i // n for i in range(n + 1)]
+        spans.extend(zip(edges[:-1], edges[1:], strict=True))
         starts.extend([True] + [False] * (n - 1))
     return Tokens(spans, starts)
 
@@ -235,15 +242,19 @@ def plan_text(
     # Token positions where a piece may start or end without cutting a word in half.
     cuts = [j for j in range(n) if tokens.word_start[j]] + [n]
 
+    # A word boundary is used only if it keeps at least half of what fits; otherwise the
+    # piece is cut inside the word (a very long word, or text without spaces).
     def at_most(pos: int, floor: int) -> int:
-        """Largest cut in (floor, pos], else ``pos``."""
+        """Largest cut in (floor, pos] that keeps at least half of it, else ``pos``."""
         i = bisect.bisect_right(cuts, pos) - 1
-        return cuts[i] if i >= 0 and cuts[i] > floor else pos
+        ok = i >= 0 and cuts[i] > floor and pos - cuts[i] <= (pos - floor) // 2
+        return cuts[i] if ok else pos
 
     def at_least(pos: int, ceiling: int) -> int:
-        """Smallest cut in [pos, ceiling), else ``pos``."""
+        """Smallest cut in [pos, ceiling) that keeps at least half of it, else ``pos``."""
         i = bisect.bisect_left(cuts, pos)
-        return cuts[i] if i < len(cuts) and cuts[i] < ceiling else pos
+        ok = i < len(cuts) and cuts[i] < ceiling and cuts[i] - pos <= (ceiling - pos) // 2
+        return cuts[i] if ok else pos
 
     def span(a: int, b: int) -> str:
         return text[tokens.spans[a][0] : tokens.spans[b - 1][1]].strip()
@@ -276,12 +287,19 @@ def plan_text(
                 break
             nxt = end
             if overlap:
-                # The cut nearest to ``end - overlap`` that still moves forward.
+                # The cut nearest to ``end - overlap`` that still moves forward; if no word
+                # starts within ``overlap`` of it (a long word), cut inside the word.
                 target = end - overlap
                 i = bisect.bisect_left(cuts, target)
-                options = [c for c in cuts[max(0, i - 1) : i + 1] if start < c <= end]
+                options = [
+                    c
+                    for c in cuts[max(0, i - 1) : i + 1]
+                    if start < c <= end and abs(c - target) <= overlap
+                ]
                 if options:
                     nxt = min(options, key=lambda c: (abs(c - target), -c))
+                elif target > start:
+                    nxt = target
             start = nxt
         plan.pieces = [span(a, b) for a, b in bounds]
         plan.weights = [b - a for a, b in bounds]

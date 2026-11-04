@@ -28,6 +28,9 @@ On the Arango Platform the app connects as the signed-in user. Users no longer e
 - A chunk document embedded again on its own (a full re-embed) keeps its `parent_key`, `chunk_index` and `chunk_count`, and its other fields are never embedded.
 - `MAX_URL_DOWNLOAD_MB` (default 500) caps a URL load saved to disk for the pre-scan.
 - Chunk documents are written before their original. If they fail, the original keeps its previous vector and gets `status: "error"`. Loads with `on_duplicate` `ignore`/`error` don't write chunks for existing documents.
+- Long words and text without spaces (Chinese, Japanese, base64, minified JSON, long URLs) are cut inside the word when no word boundary is near enough, so estimated counts can truncate and chunk them.
+- A full re-embed processes an original before its chunk documents, so an edited original's chunks get vectors of their new text.
+- The watcher marks a document `status: "error"` when the provider keeps rejecting its text as too long after every smaller attempt, instead of retrying the batch forever.
 - Re-embeds with `only_missing` skip originals split by `chunk_docs` whose chunks are current (same text, model and `long_input`), even though their vector is `null`. Editing the original re-embeds it. The job's `result.chunked_unchanged` counts the originals skipped.
 
 ### Added

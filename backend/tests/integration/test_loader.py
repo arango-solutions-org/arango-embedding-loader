@@ -306,6 +306,44 @@ def test_reembed_with_chunks_in_key_order(client, db):
     assert col.get("13")["embedding"] and not col.get("14").get("embedding")
 
 
+def test_full_reembed_rewrites_chunks_of_an_edited_original(client, db):
+    """The original and its old chunks come back in one batch: the old chunks must not be
+    embedded from their old text and written back over the new chunks."""
+    from app.providers.fake import FakeProvider
+
+    spec = FAKE | {
+        "long_input": "chunk_docs",
+        "max_tokens": 10,
+        "chunk_overlap_tokens": 0,
+        "token_chars": 100,
+    }
+    body = {
+        "collection": "edited",
+        "embeddings": [spec],
+        "documents": [{"_key": "p", "text": " ".join(f"old{i}" for i in range(40))}],
+    }
+    job = client.post("/api/v1/load?wait=true", json=body).json()
+    assert job["status"] == "succeeded" and job["counts"]["chunks"] == 4, job
+
+    col = db.collection("edited")
+    col.update({"_key": "p", "text": " ".join(f"new{i}" for i in range(25))})
+    full = client.post(
+        "/api/v1/collections/edited/embed?wait=true",
+        json={"embeddings": [spec], "only_missing": False, "batch_size": 100},
+    ).json()
+    assert full["status"] == "succeeded" and not full.get("errors"), full
+    assert full["result"]["stale_chunks_removed"] == 1
+    assert full["counts"]["read"] == 1 and full["counts"]["chunks"] == 3, full
+
+    keys = sorted(d["_key"] for d in col.all())
+    assert keys == ["p", "p_embedding_chunk_0", "p_embedding_chunk_1", "p_embedding_chunk_2"]
+    for n in range(3):
+        chunk = col.get(f"p_embedding_chunk_{n}")
+        assert chunk["text"].startswith("new"), chunk["text"]
+        assert chunk["embedding_meta"]["chunk_count"] == 3
+        assert chunk["embedding"] == pytest.approx(FakeProvider._vector(chunk["text"], 384, ""))
+
+
 def test_watcher_marks_long_text_and_carries_on(client, db):
     """long_input: error in a watcher: the long document fails alone; the rest are embedded."""
     profile = {

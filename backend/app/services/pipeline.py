@@ -295,6 +295,10 @@ class InputTooLongError(AppError):
         super().__init__(422, "input_too_long", message)
 
 
+class StillTooLongError(ProviderError):
+    """The provider kept rejecting a text as too long after every smaller attempt."""
+
+
 async def embed_documents(
     docs: list[dict[str, Any]],
     specs: list[ResolvedSpec],
@@ -312,9 +316,10 @@ async def embed_documents(
     :class:`InputTooLongError`, which stops the run. With ``keep_chunked``, fields whose
     chunks are current (see :func:`is_unchanged_chunked`) are left as they are.
 
-    With ``errors_per_document`` (the watcher), a text too long under ``long_input: error`` does
-    not raise: that document gets ``<target>_meta.status: "error"`` and an error outcome, and
-    the others are embedded.
+    With ``errors_per_document`` (the watcher), a text too long under ``long_input: error``, or
+    one the provider still rejects as too long after every smaller attempt
+    (:class:`StillTooLongError`), does not raise: that document gets
+    ``<target>_meta.status: "error"`` and an error outcome, and the others are embedded.
 
     A chunk document's other fields are never embedded (their vectors are left off on purpose),
     and a chunk document that is embedded again keeps its link to its original.
@@ -323,10 +328,12 @@ async def embed_documents(
     splits: dict[int, list[_Split]] = {}
     links = _chunk_links(docs, specs)
 
-    def too_long(spec: ResolvedSpec, pos: int, exc: InputTooLongError, stats: dict) -> None:
+    def too_long(
+        spec: ResolvedSpec, pos: int, exc: InputTooLongError | StillTooLongError, stats: dict
+    ) -> None:
         if not errors_per_document:
             raise exc
-        outcomes[pos].error = str(exc.detail)
+        outcomes[pos].error = str(exc.detail if isinstance(exc, AppError) else exc)
         if store_metadata:
             set_path(docs[pos], spec.meta, _meta(spec, "error", reason="too long", **stats))
 
@@ -501,7 +508,7 @@ async def _embed_plans(
     plans: list[TextPlan],
     input_type: InputType,
     outcomes: list[DocOutcome],
-    too_long: Callable[[ResolvedSpec, int, InputTooLongError, dict], None],
+    too_long: Callable[[ResolvedSpec, int, InputTooLongError | StillTooLongError, dict], None],
 ) -> tuple[list[TextPlan], list[list[list[float]]]]:
     """Embed the pieces of every plan. Returns the plans (some may be re-planned) and, per plan,
     the vectors of its pieces (none when it is skipped).
@@ -548,7 +555,7 @@ async def _embed_plans(
     for pos, text, plan in zip(positions, texts, plans, strict=True):
         try:
             plan, vecs = await _embed_one(spec, docs, pos, text, plan, input_type, outcomes)
-        except InputTooLongError as exc:
+        except (InputTooLongError, StillTooLongError) as exc:
             too_long(spec, pos, exc, plan.stats)  # raises unless errors are per document
             plan, vecs = dataclasses.replace(plan, action="error"), []
         new_plans.append(plan)
@@ -613,7 +620,7 @@ async def _embed_one(
             original = original or current
             plan.stats["max_tokens_reduced_from"] = original
             _check_plan(spec, docs, pos, plan, outcomes)
-    raise ProviderError(
+    raise StillTooLongError(
         f"{spec.provider.name}/{spec.model} kept rejecting the text for '{spec.target}' in "
         f"document {_doc_ref(docs[pos], pos)} as too long after {_SHRINK_ATTEMPTS} smaller "
         "attempts",
@@ -715,6 +722,10 @@ class ChunkWrite:
     written: int = 0
     removed: int = 0
     keys: list[str] = field(default_factory=list)
+    #: Keys of chunk documents deleted as left over from an earlier, longer split.
+    removed_keys: list[str] = field(default_factory=list)
+    #: Keys of chunk documents deleted because another chunk of the same document failed.
+    failed_keys: list[str] = field(default_factory=list)
 
 
 def write_chunks_first(
@@ -779,6 +790,7 @@ def write_chunks_first(
     if failed:
         orphans = [c["_key"] for c, o in zip(chunks, owners, strict=True) if o in failed]
         collection.delete_many([{"_key": k} for k in orphans], silent=True)
+        out.failed_keys = [str(k) for k in orphans]
         for i, msg in failed.items():
             outcome, doc = outcomes[i], docs[i]
             outcome.undo_split(doc)
@@ -792,7 +804,8 @@ def write_chunks_first(
     good = [c for c, o in zip(chunks, owners, strict=True) if o not in failed]
     out.written = len(good)
     out.keys = [str(c["_key"]) for c in good]
-    out.removed = remove_stale_chunks(db, collection, good, specs)
+    out.removed_keys = remove_stale_chunks(db, collection, good, specs)
+    out.removed = len(out.removed_keys)
     return out
 
 
@@ -814,15 +827,15 @@ def remove_stale_chunks(
     collection: Any,
     chunks: list[dict[str, Any]],
     specs: list[ResolvedSpec],
-) -> int:
+) -> list[str]:
     """Delete chunk documents left over from an earlier split of the same text into more chunks.
 
     Only documents that are certainly such chunks are removed: the key is exactly
     ``<parent>_<target>_chunk_<n>`` with ``n`` at or past the new chunk count, and the
     document's ``<target>_meta`` names the same ``parent_key`` and ``chunk_index`` ``n``.
-    Returns the number removed.
+    Returns the keys removed.
     """
-    removed = 0
+    removed: list[str] = []
     for spec in specs:
         parents: dict[str, tuple[str, int]] = {}  # parent key -> (key prefix, chunk count)
         for chunk in chunks:
@@ -862,7 +875,7 @@ def remove_stale_chunks(
             keys = [k for ks in found.values() for k in ks]
             if keys:
                 collection.delete_many([{"_key": k} for k in keys], silent=True)
-                removed += len(keys)
+                removed.extend(keys)
             # A full window may mean more beyond it.
             start = {
                 p: start[p] + _STALE_WINDOW for p, ks in found.items() if len(ks) == _STALE_WINDOW
@@ -1135,6 +1148,15 @@ def _bind_path(path: str) -> list[str]:
     return split_path(path)
 
 
+def _parent_in(doc: dict[str, Any], specs: list[ResolvedSpec], keys: set[str]) -> bool:
+    """``doc`` is a chunk document whose original's key is in ``keys``."""
+    for spec in specs:
+        parent = get_path(doc, f"{spec.meta}.parent_key")
+        if parent is not None and str(parent) != str(doc.get("_key")) and str(parent) in keys:
+            return True
+    return False
+
+
 async def run_reembed(
     handle: JobHandle, db: StandardDatabase, collection_name: str, req: ReembedRequest
 ) -> None:
@@ -1218,7 +1240,10 @@ async def run_reembed(
     await _prescan(handle, eff, batches())
 
     dims: dict[str, int] = {}
-    async for batch in batches(count_unchanged=True):
+    #: Chunk documents deleted by this run as left over from a longer split.
+    gone: set[str] = set()
+
+    async def process(batch: list[dict[str, Any]]) -> None:
         job.counts.read += len(batch)
         outcomes = await embed_documents(
             batch, eff.specs, store_metadata=eff.store_metadata, keep_chunked=req.only_missing
@@ -1235,6 +1260,8 @@ async def run_reembed(
         )
         _count_chunks(handle, write)
         written_chunks.update(write.keys)
+        gone.update(write.removed_keys)
+        gone.update(write.failed_keys)
         updates: list[dict[str, Any]] = []
         for doc, outcome in zip(batch, outcomes, strict=True):
             if outcome.over_limit:
@@ -1262,6 +1289,21 @@ async def run_reembed(
             handle.add_error(msg, key=key)
         _record_dims(dims, chunk_documents(outcomes), eff.specs)
         handle.touch()
+
+    async for batch in batches(count_unchanged=True):
+        # A chunk document whose original is in the same batch waits until the original is
+        # done: if the original is split again, its chunks are rewritten (or removed) and the
+        # old chunk must not be embedded from its old text and written back over them.
+        keys = {str(d["_key"]) for d in batch}
+        later = [d for d in batch if _parent_in(d, eff.specs, keys)]
+        if later:
+            first = [d for d in batch if not _parent_in(d, eff.specs, keys)]
+            if first:
+                await process(first)
+            batch = [d for d in later if d["_key"] not in written_chunks and d["_key"] not in gone]
+            if not batch:
+                continue
+        await process(batch)
     # The starting total counts documents matched up front. Some are then left out (current
     # chunks, chunk documents this run re-created), so end on the number actually processed.
     job.total = job.counts.read

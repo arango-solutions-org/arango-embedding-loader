@@ -10,10 +10,11 @@ import pytest
 
 from app.models.embedding import EmbeddingFieldSpec
 from app.providers.base import EmbeddingProvider, InputType, ProviderOptions
-from app.providers.long_input import EstimateTokenizer
+from app.providers.long_input import EstimateTokenizer, LongInput, plan_text
 from app.providers.registry import get_provider, register_provider
 from app.services.pipeline import (
     InputTooLongError,
+    StillTooLongError,
     chunk_documents,
     embed_documents,
     is_settled,
@@ -747,6 +748,54 @@ async def test_errors_per_document_after_provider_rejection(strict):
     assert docs[1]["vec"] == [3.0, 1.0]
 
 
+class PoisonProvider(WordProvider):
+    """Rejects as too long any request holding the word ``poison``, however short."""
+
+    name = "poison_words_test"
+
+    async def embed_batch(self, texts, **kwargs):  # type: ignore[override]
+        if any("poison" in t for t in texts):
+            raise ValueError("This model's maximum context length is 4 tokens")
+        return await super().embed_batch(texts, **kwargs)
+
+
+@pytest.mark.parametrize("mode", ["truncate_end", "chunk_docs"])
+async def test_still_rejected_text_fails_alone_per_document(mode):
+    """The watcher: a text the provider keeps rejecting fails its own document, not the batch."""
+    register_provider(PoisonProvider)
+    specs = _specs(mode, provider="poison_words_test", max_tokens=6)
+    docs = [{"_key": "a", "text": "poison " + LONG}, {"_key": "b", "text": SHORT}]
+    outcomes = await embed_documents(docs, specs, store_metadata=True, errors_per_document=True)
+    assert outcomes[0].error and "kept rejecting" in outcomes[0].error
+    assert docs[0]["vec_meta"]["status"] == "error" and "vec" not in docs[0]
+    assert not outcomes[0].chunks
+    assert docs[1]["vec"] == [3.0, 1.0] and outcomes[1].embedded
+
+    with pytest.raises(StillTooLongError, match="kept rejecting"):
+        await embed_documents([{"_key": "a", "text": "poison " + LONG}], specs, store_metadata=True)
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["\u6c49" * 3000, " ".join(["ab"] * 10) + " " + "x" * 6000],
+    ids=["no-spaces", "one-long-word"],
+)
+@pytest.mark.parametrize(
+    "mode", ["truncate_end", "truncate_start", "truncate_middle", "chunk_docs"]
+)
+def test_estimated_counts_cut_text_without_spaces(text, mode):
+    """With an estimate, a word longer than the limit is cut by characters."""
+    tokens = EstimateTokenizer(3.0).tokenize([text])[0]
+    plan = plan_text(text, tokens, 512, LongInput(mode=mode, chunk_overlap_tokens=0), exact=False)
+    assert all(t <= 512 for t in plan.piece_tokens)
+    assert all(len(p) <= 512 * 3 + 1 for p in plan.pieces)  # + the truncate_middle join
+    if mode == "chunk_docs":
+        assert "".join(plan.pieces).replace(" ", "") == text.replace(" ", "")
+        assert len(plan.pieces) > 1
+    else:
+        assert plan.stats["truncated"] and len(plan.pieces[0]) < len(text)
+
+
 async def test_failed_document_keeps_its_vector_when_another_field_is_chunked(provider):
     """Field `vec` would be split, but field `tvec` fails: nothing about `vec` may change."""
     specs = resolve_specs(
@@ -1108,3 +1157,18 @@ async def test_other_fields_of_chunk_documents_are_settled(provider):
     )
     _, chunks = await _chunked(specs)
     assert chunks and all(is_settled(c, s) for c in chunks for s in specs)
+
+
+def test_overlap_inside_long_words_stays_near_the_overlap():
+    """A chunk that ends inside a long word overlaps the next by about `chunk_overlap_tokens`,
+    not by most of the word."""
+    text = ("a " + "x" * 3000 + " ") * 5
+    tokens = EstimateTokenizer(1.0).tokenize([text])[0]
+    plain, overlapped = (
+        plan_text(
+            text, tokens, 512, LongInput(mode="chunk_docs", chunk_overlap_tokens=o), exact=False
+        )
+        for o in (0, 25)
+    )
+    extra = sum(overlapped.piece_tokens) - sum(plain.piece_tokens)
+    assert 0 < extra <= 25 * len(overlapped.pieces)

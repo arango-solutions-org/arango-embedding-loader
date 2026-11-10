@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSpecs, cleanOptions, DEFAULT_MODEL_CHOICE, defaultTarget, formatBytes } from "./spec";
+import {
+  buildSpecs,
+  cleanOptions,
+  DEFAULT_LONG_INPUT,
+  DEFAULT_MODEL_CHOICE,
+  defaultTarget,
+  formatBytes,
+  LONG_INPUT_DEFAULTS,
+  longInputFields,
+  longInputRequest,
+} from "./spec";
 
 describe("spec helpers", () => {
   it("builds one spec per labeled field with the preset", () => {
@@ -17,6 +27,9 @@ describe("spec helpers", () => {
         preset: "pubmedbert",
         provider_options: {},
         on_missing: "skip",
+        long_input: "chunk_docs",
+        warn_on_long_input: true,
+        chunk_overlap_tokens: 25,
       },
     ]);
   });
@@ -47,5 +60,41 @@ describe("spec helpers", () => {
   it("cleans empty options and formats bytes", () => {
     expect(cleanOptions({ a: "", b: 0, c: false, d: null })).toEqual({ b: 0, c: false });
     expect(formatBytes(1536)).toBe("1.5 KB");
+  });
+});
+
+describe("long input", () => {
+  it("adds the long-input settings to every spec", () => {
+    const specs = buildSpecs(
+      [{ path: "text", target: "embedding" }],
+      null,
+      DEFAULT_MODEL_CHOICE,
+      "skip",
+      "embedding",
+      { mode: "chunk_mean", overlap: "10", maxTokens: "", tokenChars: "3.5", warn: false },
+    );
+    expect(specs[0]).toMatchObject({
+      long_input: "chunk_mean",
+      chunk_overlap_tokens: 10,
+      token_chars: 3.5,
+      warn_on_long_input: false,
+    });
+    expect(specs[0]).not.toHaveProperty("max_tokens");
+  });
+
+  it("defaults to chunk_docs with 25 overlap tokens", () => {
+    expect(longInputFields(DEFAULT_LONG_INPUT)).toEqual({
+      long_input: "chunk_docs",
+      warn_on_long_input: true,
+      chunk_overlap_tokens: 25,
+    });
+  });
+
+  it("fills every field for the provider test request", () => {
+    expect(longInputRequest({ ...DEFAULT_LONG_INPUT, overlap: "" })).toEqual({
+      ...LONG_INPUT_DEFAULTS,
+      max_tokens: null,
+    });
+    expect(longInputRequest({ ...DEFAULT_LONG_INPUT, mode: "error" }).long_input).toBe("error");
   });
 });

@@ -9,16 +9,38 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import logging
 from abc import ABC, abstractmethod
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ModelWrapValidatorHandler,
+    PrivateAttr,
+    ValidationError,
+    model_validator,
+)
 from tenacity import (
     AsyncRetrying,
     retry_if_exception,
     stop_after_attempt,
     wait_exponential_jitter,
 )
+
+from app.providers.long_input import (
+    LEGACY_TRUNCATE_OPTIONS,
+    EstimateTokenizer,
+    LongInput,
+    LongInputMode,
+    TextPlan,
+    Tokenizer,
+    legacy_long_input,
+    plan_text,
+)
+
+log = logging.getLogger(__name__)
 
 InputType = Literal["document", "query"]
 
@@ -32,9 +54,54 @@ class ProviderError(Exception):
 
 
 class ProviderOptions(BaseModel):
-    """Base class for provider-specific options (API keys, endpoints, devices...)."""
+    """Base class for provider-specific options (API keys, endpoints, devices...).
+
+    The spec's ``long_input`` mode travels with the options, but is not one of them: providers
+    with their own truncation option set it from :attr:`long_input_mode`.
+    """
 
     model_config = ConfigDict(extra="forbid")
+
+    _long_input: LongInputMode = PrivateAttr("truncate_end")
+
+    @property
+    def long_input_mode(self) -> LongInputMode:
+        return self._long_input
+
+    def with_long_input(self, mode: LongInputMode) -> Self:
+        copy = self.model_copy()
+        copy._long_input = mode
+        return copy
+
+
+class NativeTruncationOptions(ProviderOptions):
+    """Options of a provider that has its own truncation option.
+
+    That option used to be a provider option (``truncate`` or ``truncation``); it is now set from
+    ``long_input``. The old keys are still accepted, mapped to a mode, and logged as deprecated.
+    """
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _legacy_truncate(cls, data: Any, handler: ModelWrapValidatorHandler[Self]) -> Self:
+        mode: LongInputMode | None = None
+        if isinstance(data, dict) and any(k in data for k in LEGACY_TRUNCATE_OPTIONS):
+            data = dict(data)
+            for key in LEGACY_TRUNCATE_OPTIONS:
+                if key in data:
+                    value = data.pop(key)
+                    mode = legacy_long_input(value) or mode
+                    log.warning(
+                        "Provider option '%s' is deprecated and no longer a provider option; "
+                        "use long_input on the embedding spec (%r is long_input=%s)",
+                        key,
+                        value,
+                        legacy_long_input(value) or "not recognized, ignored",
+                    )
+        options = handler(data)
+        if mode is not None:
+            options._long_input = mode
+        return options
 
 
 class ModelInfo(BaseModel):
@@ -42,6 +109,7 @@ class ModelInfo(BaseModel):
 
     id: str
     dimension: int | None = Field(None, description="Output dimension, when known.")
+    max_tokens: int | None = Field(None, description="Input token limit, when known.")
     description: str | None = None
 
 
@@ -64,6 +132,43 @@ _RETRYABLE_NAMES = (
     "ReadError",
     "RemoteProtocolError",
 )
+
+
+#: Phrases in provider errors that reject an input or request for its length.
+_TOO_LONG_MARKERS = (
+    "context length",
+    "context_length",
+    "too many tokens",
+    "too many input tokens",
+    "maximum number of tokens",
+    "max tokens",
+    "max allowed tokens",
+    "tokens per request",
+    "tokens per submitted batch",
+    "token limit",
+    "input is too long",
+    "input too long",
+    "text is too long",
+    "too long for",
+    "exceeds the maximum",
+    "maxlength",
+)
+
+
+def _is_rate_limit(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        status = (
+            None if isinstance(current, ProviderError) else getattr(current, "status_code", None)
+        )
+        status = status or getattr(getattr(current, "response", None), "status_code", None)
+        name = type(current).__name__
+        if status == 429 or any(n in name for n in ("RateLimit", "Throttl", "TooManyRequests")):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
 
 
 def default_is_retryable(exc: BaseException) -> bool:
@@ -91,6 +196,8 @@ class EmbeddingProvider(ABC):
     max_batch_size: ClassVar[int] = 128
     #: Max concurrent requests per pipeline.
     max_concurrency: ClassVar[int] = 4
+    #: Most tokens one request may hold, summed over its texts (``None``: no limit).
+    max_batch_tokens: ClassVar[int | None] = None
     default_model: ClassVar[str | None] = None
     known_models: ClassVar[tuple[ModelInfo, ...]] = ()
     #: Whether the model accepts a ``dimensions`` override.
@@ -136,6 +243,57 @@ class EmbeddingProvider(ABC):
                 return info.dimension
         return None
 
+    # -------------------------------------------------------------- long input
+
+    def token_limit(self, model: str, options: ProviderOptions) -> int | None:
+        """The model's input token limit. Defaults to ``known_models``; ``None`` if unknown."""
+        for info in self.known_models:
+            if info.id == model:
+                return info.max_tokens
+        return None
+
+    def exact_tokenizer(self, model: str, options: ProviderOptions) -> Tokenizer | None:
+        """The model's own tokenizer, if available. Otherwise token counts are estimated."""
+        return None
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        """Truncate modes the provider applies itself (the whole text is sent)."""
+        return frozenset()
+
+    def apply_long_input(
+        self, options: ProviderOptions, model: str, mode: LongInputMode
+    ) -> ProviderOptions:
+        """Attach the spec's ``long_input`` mode to ``options``.
+
+        Providers with their own truncation option read it back from
+        :attr:`ProviderOptions.long_input_mode` when they build a request.
+        """
+        return options.with_long_input(mode)
+
+    def batch_token_limit(self, model: str) -> int | None:
+        """Most tokens one request may hold, summed over its texts. ``None``: no limit."""
+        return self.max_batch_tokens
+
+    def is_input_too_long(self, exc: BaseException) -> bool:
+        """``exc`` is the provider rejecting an input (or request) for having too many tokens.
+
+        A rate limit is never one, even when its message talks about tokens ("too many tokens
+        per minute"): shrinking the input would not help.
+        """
+        if _is_rate_limit(exc):
+            return False
+        seen: set[int] = set()
+        current: BaseException | None = exc
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            name = type(current).__name__
+            if "Timeout" not in name and "Connect" not in name:
+                text = str(current).lower()
+                if any(marker in text for marker in _TOO_LONG_MARKERS):
+                    return True
+            current = current.__cause__ or current.__context__
+        return False
+
     # --------------------------------------------------------------- embedding
 
     @abstractmethod
@@ -150,6 +308,41 @@ class EmbeddingProvider(ABC):
     ) -> list[list[float]]:
         """Embed at most ``max_batch_size`` texts in a single provider call."""
 
+    def plan_inputs(
+        self,
+        texts: list[str],
+        *,
+        model: str,
+        options: ProviderOptions,
+        input_type: InputType,
+        long_input: LongInput | None = None,
+        allow_native: bool = True,
+    ) -> list[TextPlan]:
+        """Count each text's tokens and decide how it is sent. Called in a worker thread.
+
+        ``allow_native=False`` makes the loader apply every mode itself, e.g. when the provider
+        rejected a text its own truncation should have handled.
+        """
+        settings = long_input or LongInput()
+        limit = settings.max_tokens or self.token_limit(model, options)
+        tokenizer = self.exact_tokenizer(model, options) or EstimateTokenizer(settings.token_chars)
+        native = self.native_long_input(model) if allow_native else frozenset()
+        return [
+            plan_text(text, tokens, limit, settings, exact=tokenizer.exact, native=native)
+            for text, tokens in zip(texts, tokenizer.tokenize(texts), strict=True)
+        ]
+
+    def combine_vectors(
+        self, vectors: list[list[float]], weights: list[int] | None, options: ProviderOptions
+    ) -> list[float]:
+        """Weighted mean of the vectors of one text's pieces."""
+        w = weights or [1] * len(vectors)
+        total = float(sum(w)) or 1.0
+        return [
+            sum(wi * v[k] for v, wi in zip(vectors, w, strict=True)) / total
+            for k in range(len(vectors[0]))
+        ]
+
     def is_retryable(self, exc: BaseException) -> bool:
         return default_is_retryable(exc)
 
@@ -162,13 +355,16 @@ class EmbeddingProvider(ABC):
         dimensions: int | None = None,
         input_type: InputType = "document",
         max_attempts: int = 5,
+        token_counts: list[int] | None = None,
     ) -> list[list[float]]:
-        """Embed any number of texts: splits into batches, runs them concurrently, retries."""
+        """Embed any number of texts: splits into batches, runs them concurrently, retries.
+
+        A batch holds at most ``max_batch_size`` texts and, when ``token_counts`` are given, at
+        most :meth:`batch_token_limit` tokens.
+        """
         if not texts:
             return []
-        chunks = [
-            texts[i : i + self.max_batch_size] for i in range(0, len(texts), self.max_batch_size)
-        ]
+        chunks = _batches(texts, token_counts, self.max_batch_size, self.batch_token_limit(model))
         sem = asyncio.Semaphore(self.max_concurrency)
 
         async def run(chunk: list[str]) -> list[list[float]]:
@@ -226,3 +422,28 @@ class EmbeddingProvider(ABC):
             "options_schema": self.Options.model_json_schema(),
             "known_models": [m.model_dump() for m in self.known_models],
         }
+
+
+def _batches(
+    texts: list[str], token_counts: list[int] | None, size: int, token_budget: int | None
+) -> list[list[str]]:
+    """Consecutive batches of at most ``size`` texts and ``token_budget`` tokens.
+
+    A single text over the budget gets a batch of its own. 80% of the budget is used, as token
+    counts may be estimates.
+    """
+    if token_counts is None or token_budget is None:
+        return [texts[i : i + size] for i in range(0, len(texts), size)]
+    budget = max(1, int(token_budget * 0.8))
+    out: list[list[str]] = []
+    batch: list[str] = []
+    used = 0
+    for text, n in zip(texts, token_counts, strict=True):
+        if batch and (len(batch) >= size or used + n > budget):
+            out.append(batch)
+            batch, used = [], 0
+        batch.append(text)
+        used += n
+    if batch:
+        out.append(batch)
+    return out

@@ -7,9 +7,11 @@ thread so parsing and network I/O never block the event loop.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import os
-from collections.abc import Iterable, Iterator
+import tempfile
+from collections.abc import Callable, Iterable, Iterator
 from itertools import islice
 from typing import IO, Any
 from urllib.parse import urlparse
@@ -29,12 +31,20 @@ class DocumentSource:
         bytes_total: int | None = None,
         total: int | None = None,
         close: Any = None,
+        reopen: Callable[[], DocumentSource] | None = None,
+        spool: Callable[[], DocumentSource] | None = None,
     ):
         self._it = iterator
         self._bytes_read = bytes_read
         self.bytes_total = bytes_total
         self.total = total
         self._close = close
+        #: Opens a fresh copy of the same documents, for a second pass. ``None`` when the
+        #: source can only be read once (streamed URLs).
+        self.reopen = reopen
+        #: For a source that can only be read once: saves it to disk and returns a source over
+        #: the saved copy, which can be reopened. Blocking; run it in a worker thread.
+        self.spool = spool
 
     @property
     def bytes_read(self) -> int | None:
@@ -50,7 +60,11 @@ class DocumentSource:
 
 def list_source(documents: Iterable[dict[str, Any]]) -> DocumentSource:
     docs = list(documents)
-    return DocumentSource(iter(docs), total=len(docs))
+    return DocumentSource(
+        iter(docs),
+        total=len(docs),
+        reopen=lambda: list_source(docs),  # the scan does not modify documents
+    )
 
 
 def file_source(
@@ -77,6 +91,51 @@ def file_source(
         bytes_total=os.path.getsize(path),
         total=total,
         close=fh.close,
+        reopen=lambda: file_source(
+            path,
+            filename=filename,
+            fmt=fmt,
+            csv_options=csv_options,
+            json_path=json_path,
+            total=total,
+        ),
+    )
+
+
+def files_source(
+    files: list[tuple[str, str | None]],
+    *,
+    fmt: FileFormat = "auto",
+    csv_options: CsvOptions | None = None,
+    json_path: str | None = None,
+    on_close: Callable[[], None] | None = None,
+) -> DocumentSource:
+    """Several local files (``(path, filename)``) read one after the other."""
+    opened: list[DocumentSource] = []
+
+    def generate() -> Iterator[dict[str, Any]]:
+        for path, filename in files:
+            src = file_source(
+                path, filename=filename, fmt=fmt, csv_options=csv_options, json_path=json_path
+            )
+            opened.append(src)
+            try:
+                yield from src._it
+            finally:
+                src.close()
+
+    def close() -> None:
+        for src in opened:
+            src.close()
+        if on_close:
+            on_close()
+
+    return DocumentSource(
+        generate(),
+        bytes_read=lambda: sum(src.bytes_read or 0 for src in opened),
+        bytes_total=sum(os.path.getsize(p) for p, _ in files),
+        close=close,
+        reopen=lambda: files_source(files, fmt=fmt, csv_options=csv_options, json_path=json_path),
     )
 
 
@@ -164,9 +223,61 @@ def url_source(
                     raw, filename=filename, fmt=fmt, csv_options=csv_options, json_path=json_path
                 )
 
+    def spool() -> DocumentSource:
+        """Download every URL to a temporary file (counted in ``bytes_read`` as it goes)."""
+        from app.config import get_settings
+
+        settings = get_settings()
+        directory = settings.upload_dir
+        cap = settings.max_url_download_mb * 1024 * 1024
+        saved = 0
+        files: list[tuple[str, str | None]] = []
+
+        def remove() -> None:
+            for path, _ in files:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink(path)
+
+        try:
+            for url in urls:
+                filename = urlparse(url).path.rsplit("/", 1)[-1]
+                fd, path = tempfile.mkstemp(
+                    prefix="ael-url-",
+                    suffix=os.path.splitext(filename)[1],
+                    dir=str(directory) if directory else None,
+                )
+                files.append((path, filename))
+                with os.fdopen(fd, "wb") as out, client.stream("GET", url) as resp:
+                    if resp.status_code >= 400:
+                        raise AppError(
+                            400, "url_fetch_failed", f"GET {url} returned HTTP {resp.status_code}"
+                        )
+                    for chunk in resp.iter_bytes():
+                        saved += len(chunk)
+                        if saved > cap:
+                            raise AppError(
+                                413,
+                                "url_download_too_large",
+                                f"The URL load is over {settings.max_url_download_mb} MB "
+                                "(MAX_URL_DOWNLOAD_MB). With long_input: error it is saved to "
+                                "disk to check lengths before embedding; use another long_input "
+                                "mode to stream it instead, or raise the limit.",
+                            )
+                        out.write(chunk)
+                        counter[0] += len(chunk)
+        except BaseException:
+            remove()
+            raise
+        finally:
+            client.close()
+        return files_source(
+            files, fmt=fmt, csv_options=csv_options, json_path=json_path, on_close=remove
+        )
+
     return DocumentSource(
         generate(),
         bytes_read=lambda: counter[0],
         bytes_total=bytes_total,
         close=client.close,
+        spool=spool,
     )

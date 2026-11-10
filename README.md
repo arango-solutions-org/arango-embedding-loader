@@ -128,6 +128,138 @@ Each embedded document looks like this:
 }
 ```
 
+### Texts longer than the model's limit
+
+Every embedding model reads a fixed number of tokens: 512 for PubMedBERT, 256 for MiniLM, 8,191
+for OpenAI's models. The loader counts each text's tokens and handles texts over the limit
+according to `long_input` on the embedding spec or profile. In the GUI, it's under **Texts longer
+than the model's limit** in the model step.
+
+| `long_input` | What happens to a text over the limit |
+| --- | --- |
+| `truncate_end` | Keep the first tokens. This was the behaviour before this setting existed. |
+| `truncate_start` | Keep the last tokens. |
+| `truncate_middle` | Keep the start and the end, joined by a line break. |
+| `chunk_mean` | Split into overlapping chunks, embed each, store the token-weighted mean as one vector. |
+| `chunk_docs` (default) | Split into overlapping chunks and store each as its own document (see below). No text is lost. |
+| `skip` | Don't embed. The document is stored with `<target>_meta.status: "skipped_too_long"`. |
+| `error` | Fail the job. See [Checking lengths before a load](#checking-lengths-before-a-load). |
+
+These settings are the same everywhere: on embedding specs and profiles, on the provider test
+endpoint (`POST /providers/{name}/embed`, which runs texts through the same code as a load and
+returns the same metadata), and in the GUI.
+
+Options on the spec:
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `chunk_overlap_tokens` | `25` | Tokens shared by consecutive chunks, rounded to the nearest word. Values above half the limit are capped at half the limit (256 for a 512-token model), so each chunk starts at least half a chunk after the previous one. |
+| `warn_on_long_input` | `true` | Log each long text as a warning. When `false`, they're logged at info level. With `error` they're always logged as errors. |
+| `max_tokens` | model's limit | Advanced. The token limit to apply. Needed when the loader doesn't know the model's limit, e.g. Ollama. |
+| `token_chars` | `3` | Advanced. Characters per token, used to estimate counts for models without a local tokenizer. English averages about 4, so 3 over-counts on purpose and pieces stay under the real limit. |
+
+**How tokens are counted.**
+
+| Provider | Count | Modes handed to the provider's API (the loader applies all others) |
+| --- | --- | --- |
+| Sentence-Transformers | Exact, with the model's own tokenizer | None |
+| OpenAI | Exact, with `tiktoken` (estimated for other OpenAI-compatible models, or without network to fetch the encoding) | None (the API has no truncation option) |
+| Voyage | Exact, with Voyage's tokenizer from the Hugging Face Hub (estimated without network) | `truncate_end` |
+| Cohere, Bedrock (Cohere models) | Estimated | `truncate_end`, `truncate_start` |
+| Ollama | Estimated; the limit must be set with `max_tokens` | `truncate_end` |
+| Bedrock (Titan) | Estimated | None (the API has no truncation option) |
+
+Only `truncate_end` and `truncate_start` can be handed over, and only to APIs with a matching
+option (Cohere's `truncate: END/START`, Voyage's and Ollama's on/off truncation). No API can
+truncate the middle or chunk. When the API truncates, the loader sends the whole text and the API
+cuts it with its own exact count, which matters where the loader's count is an estimate. `error`
+turns the API's truncation off; every other mode leaves it on as a backstop. Pieces are cut on
+word boundaries, unless the nearest one would drop more than half of what fits. A single word
+longer than that (text without spaces such as Chinese or Japanese, base64, minified JSON, long
+URLs) is then cut inside the word; with estimated counts, by characters (about `token_chars` per
+token).
+
+The provider options `truncate` (Cohere, Bedrock, Ollama) and `truncation` (Voyage)
+are replaced by `long_input` and no longer listed. They are still accepted: when `long_input` is
+not set, `END`/`true` becomes `truncate_end`, `START` becomes `truncate_start` and `NONE`/`false`
+becomes `error`, with a deprecation warning in the log. When both are set, `long_input` wins.
+
+**Texts the provider rejects anyway.** Estimated counts can be low (code, numbers, non-Latin
+scripts). Requests are sized to the provider's per-request token limit where it has one (OpenAI,
+Voyage). If the provider still rejects a request as too long, the loader sends each text on its
+own, and a text the provider rejects is planned again against 70% of the previous limit, up to six
+times, until it fits. A rate limit is never taken for a length error, even when its message
+mentions tokens. Its `<target>_meta.max_tokens` then shows the limit used and
+`max_tokens_reduced_from` the original one. With `error`, the rejection fails the job. If the
+provider still rejects the text after six attempts, the load fails; the watcher instead marks
+that document `status: "error"` and carries on.
+
+**What's recorded.** Every document's `<target>_meta` (for example `embedding_meta`) records
+`input_tokens`, `truncated` (`true`/`false`), `tokens_dropped` and `chunks`, plus `max_tokens`,
+`long_input` and `token_count` (`exact` or `estimated`). The job's `counts.over_limit` shows how
+many documents went over the limit. Each long text is also logged with its key, token count, limit
+and what was done.
+
+**`chunk_docs`.** The original document keeps its fields, gets `<target>: null` and
+`<target>_meta.status: "chunked"`. Each chunk is written to the **same collection** as a copy of
+the original. The copy has the chunk's text in `source_field` (or in `<target>_text` for templates)
+and its own vector. It's keyed `<parent _key>_<target>_chunk_<n>`, and its `<target>_meta` holds
+`parent_key`, `chunk_index` and `chunk_count`. This is a plain document collection, not a graph:
+the link is the `parent_key` value, not an edge. A vector search can return the original:
+
+```aql
+FOR c IN pubmed
+  SORT APPROX_NEAR_COSINE(c.embedding, @q) DESC LIMIT 10
+  RETURN DOCUMENT(pubmed, c.embedding_meta.parent_key || c._key)
+```
+
+Chunks are written with overwrite, so re-running a load or re-embed replaces them. A chunk
+document's other fields are never embedded, and a chunk embedded again on its own (a full
+re-embed) keeps its `parent_key`, `chunk_index` and `chunk_count`. In a full re-embed
+(`only_missing: false`), an original is processed before its chunk documents: if it is split
+again, its chunks are rewritten from the current text, and the old chunk documents are not
+embedded again on their own. If a text is
+split into fewer chunks than before, the extra chunk documents from the earlier split are deleted
+(`result.stale_chunks_removed`). Only documents that are certainly those chunks are deleted: the
+key is exactly `<parent _key>_<target>_chunk_<n>` past the new count, and the document's
+`<target>_meta` names the same `parent_key` and `chunk_index`. If an original is no longer split
+at all (it got shorter, or the mode changed), its old chunks are left for you to remove.
+
+Chunks are written before their original. If a chunk can't be written (for example, a chunk key
+would exceed ArangoDB's 254-character key limit, as chunk keys are about 20 characters longer than
+the original's), that document's chunks are removed and the document is stored with its previous
+vector, if any, and `<target>_meta.status: "error"` (`reason: "chunk write failed"`). The job
+reports the error, and a later re-embed retries it. Loads with `on_duplicate: "ignore"` or
+`"error"` don't write chunks for documents that already exist. If the same key appears twice in
+one load, only the copy that is stored writes chunks.
+
+Each chunk is a copy of its original, so a **unique index** on any copied field makes chunking
+fail for that collection (the chunks collide with each other and with the original). Use a
+different `long_input` mode for such collections.
+
+A re-embed with `only_missing` (the default) leaves a chunked original alone, even though its
+vector is `null`, as long as its chunks are current: same text, model and `long_input`. The
+original's `<target>_meta.text_hash` records the text it was split from. If you edit the original,
+for example after splitting it into chunks of your own, the next re-embed embeds it again. Deleting
+its `<target>_meta` does the same. Removing the old chunk documents is up to you. The job's
+`result.chunked_unchanged` counts the originals it left alone.
+
+#### Checking lengths before a load
+
+`"analyze": true` on a load or re-embed (**Analyze only** in the GUI) counts tokens without
+embedding or writing anything. `result.analysis` reports, for each field: the limit, how many
+documents are over it and by how many tokens, the median, p90, p99 and max token counts, and the
+20 longest over-limit documents. Use it to choose `long_input` before a long run.
+
+With `long_input: error`, the loader runs this check automatically before embedding anything. If
+any text is too long, the job fails straight away. The error log and job message name the longest
+documents, and `result.analysis` has the full report. Without this, a long row near the end would
+fail the job after hours of embedding. Uploaded files, JSON bodies and re-embeds are read twice
+for this. URL loads are downloaded once to a temporary file (in `UPLOAD_DIR`, or the system temp
+directory), which is read twice and deleted when the job ends (`result.spooled: true`). Downloads
+over `MAX_URL_DOWNLOAD_MB` (500 by default) fail the job; other modes stream URLs without saving
+them.
+
 ### Auto-embedding collections
 
 ```bash
@@ -143,7 +275,22 @@ ArangoDB has no triggers and doesn't call models itself, so the loader provides 
 - **Watcher** (`auto_watch: true`). A background task finds documents with no
   `<target>_meta.status`, using a persistent index, and embeds them. This covers documents written by
   `arangoimport`, drivers or the web UI. Watchers restart with the server for profiles in the
-  default database.
+  default database. A document the watcher can't embed (a text too long under
+  `long_input: error`, a text the provider keeps rejecting as too long, or a missing source
+  under `on_missing: error`) is marked
+  `<target>_meta.status: "error"` and logged, and the watcher carries on with the others. It
+  doesn't see later edits to documents it has already processed; run a re-embed for those.
+- **When a batch fails.** The watcher embeds documents in batches. If a batch fails with any
+  error (provider errors are retried first), the watcher checks that each provider still embeds
+  a tiny text. If it doesn't, the provider is treated as down: nothing is marked, and the batch
+  is retried later with backoff (up to 5 minutes). If it does, each document is embedded on its
+  own. One that still fails is marked `status: "error"` (`reason: "embedding failed"`, with the
+  message in `error`) and the others are stored, so one bad document can't hold up the queue.
+  Good documents aren't marked for the provider's problems. Rate limits, timeouts, connection
+  and auth errors (in the batch or in any single document) mean the provider is the problem:
+  nothing is marked and the batch is retried later. The same goes when every document of a
+  batch fails on its own. A document marked this way has no vector, so a re-embed with
+  `only_missing` tries it again.
 
 Profiles are stored in the `embedding_loader_profiles` collection in the same database. Secrets
 in `provider_options` are never persisted. Configure API keys for profiles through server
@@ -168,6 +315,7 @@ All settings are environment variables (or `.env`). See [`.env.example`](.env.ex
 | `ST_MODELS_DIR` | `/opt/models` | Models baked in at build time, loaded from `<dir>/<org>/<name>` |
 | `EMBED_CONCURRENCY` / `DEFAULT_BATCH_SIZE` | `4` / `64` | Pipeline tuning |
 | `MAX_UPLOAD_MB` | `1024` | Upload limit |
+| `MAX_URL_DOWNLOAD_MB` | `500` | Limit on a URL load saved to disk for the `long_input: error` pre-scan |
 | `ALLOW_URL_SOURCES` / `URL_ALLOWED_HOSTS` | `true` / any | Restrict `POST /load/url` (for example `["storage.googleapis.com"]`) |
 | `PRESETS_FILE` | – | YAML file with extra presets |
 | `CORS_ORIGINS` | `["http://localhost:5173"]` | For a separately hosted GUI |

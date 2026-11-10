@@ -18,10 +18,32 @@ On the Arango Platform the app connects as the signed-in user. Users no longer e
 - Off the platform the server exchanges `ARANGO_USERNAME` / `ARANGO_PASSWORD` for a JWT. Every connection now authenticates with a token.
 - There is one watcher per collection, whoever started it.
 - The header shows the signed-in user and a database picker. The choice is remembered in the browser.
+- Texts longer than the model's token limit are no longer cut silently. By default (`long_input: chunk_docs`) they are split into overlapping chunks, and each chunk is stored as its own document. Set `long_input: truncate_end` to keep the old behaviour.
+- The provider options `truncate` (Cohere, Bedrock, Ollama) and `truncation` (Voyage) are replaced by `long_input` and no longer listed in the provider options, API schema or GUI. They are still accepted (deprecated): when `long_input` is not set they set it (`END`/`true` → `truncate_end`, `START` → `truncate_start`, `NONE`/`false` → `error`).
+- `POST /providers/{name}/embed` runs texts through the same code as a load. It takes the `long_input` settings and returns, per text, the status, `<target>_meta` and vectors (`results`). `vectors` and `count` include every chunk vector.
+- Estimated token counts use 3 characters per token by default (was 4), so pieces stay under the real limit. Requests to OpenAI and Voyage are sized to their per-request token limits. If a provider still rejects a text as too long, it is embedded again with a smaller limit (`max_tokens_reduced_from` in its metadata), so a load does not fail on a low estimate.
+- URL loads with `long_input: error` are downloaded once to a temporary file, so the pre-scan runs without downloading twice.
+- When a text is split into fewer chunks than before, the extra chunk documents are deleted (`result.stale_chunks_removed`).
+- The watcher marks a document whose text is too long under `long_input: error` as `status: "error"` and carries on, instead of failing the batch and retrying it forever.
+- A chunk document embedded again on its own (a full re-embed) keeps its `parent_key`, `chunk_index` and `chunk_count`, and its other fields are never embedded.
+- `MAX_URL_DOWNLOAD_MB` (default 500) caps a URL load saved to disk for the pre-scan.
+- Chunk documents are written before their original. If they fail, the original keeps its previous vector and gets `status: "error"`. Loads with `on_duplicate` `ignore`/`error` don't write chunks for existing documents.
+- Long words and text without spaces (Chinese, Japanese, base64, minified JSON, long URLs) are cut inside the word when no word boundary is near enough, so estimated counts can truncate and chunk them.
+- A full re-embed processes an original before its chunk documents, so an edited original's chunks get vectors of their new text.
+- The watcher marks a document `status: "error"` when the provider keeps rejecting its text as too long after every smaller attempt, instead of retrying the batch forever.
+- When a watcher batch fails with any error, the watcher checks the provider with a tiny text. If the provider works, each document is embedded on its own, and only those that still fail are marked `status: "error"` (`reason: "embedding failed"`). If it doesn't, the batch is retried later as before. Rate limits, timeouts, connection and auth errors, or every document failing on its own, mark nothing.
+- A rate-limit error whose message mentions tokens is no longer taken for an input that is too long, so texts aren't cut smaller for it.
+- Re-embeds with `only_missing` skip originals split by `chunk_docs` whose chunks are current (same text, model and `long_input`), even though their vector is `null`. Editing the original re-embeds it. The job's `result.chunked_unchanged` counts the originals skipped.
 
 ### Added
 
 - `GET /api/v1/databases` lists the databases the user can access.
+- `long_input` on the embedding spec and profile, for every provider, sets what happens to texts longer than the model's token limit: `truncate_end` (the behaviour before), `truncate_start`, `truncate_middle`, `chunk_mean`, `chunk_docs` (the default), `skip` or `error`. There are also `chunk_overlap_tokens` (default 25, rounded to the nearest word), `warn_on_long_input`, and the advanced `max_tokens` and `token_chars`.
+- Tokens are counted with the model's own tokenizer for Sentence-Transformers, OpenAI (`tiktoken`, added to the `openai` extra) and Voyage, and estimated for other providers. Cohere, Bedrock-Cohere, Voyage and Ollama use their own truncation options where one matches the mode.
+- `<target>_meta` records `input_tokens`, `truncated`, `tokens_dropped` and `chunks` on every document. Job counts include `over_limit` and `chunks`.
+- The GUI shows enum provider options as drop-downs.
+- `analyze: true` on loads and re-embeds (**Analyze only** in the GUI) reports token lengths and over-limit documents without embedding or writing anything.
+- With `long_input: error`, the input is checked for over-limit texts before anything is embedded, so the job fails up front rather than partway through. URL loads skip this check.
 
 ### Fixed
 

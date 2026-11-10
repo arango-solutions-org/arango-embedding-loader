@@ -36,6 +36,8 @@ export function JobProgress({ initial }: { initial: Job }) {
   const c = job.counts;
   const vi = job.result?.vector_index as { status?: string; error?: string } | undefined;
   const samples = job.result?.samples as unknown[] | undefined;
+  const analysis = job.result?.analysis as Analysis | undefined;
+  const prescan = job.result?.prescan as { status: string; reason?: string } | undefined;
 
   return (
     <div className="flex flex-col gap-4">
@@ -58,7 +60,7 @@ export function JobProgress({ initial }: { initial: Job }) {
         )}
       </div>
       <ProgressBar value={job.status === "succeeded" ? 1 : job.progress} />
-      <dl className="grid grid-cols-3 gap-3 text-sm sm:grid-cols-6">
+      <dl className="grid grid-cols-4 gap-3 text-sm sm:grid-cols-8">
         {(
           [
             ["Read", c.read],
@@ -67,6 +69,8 @@ export function JobProgress({ initial }: { initial: Job }) {
             ["Updated", c.updated],
             ["Skipped", c.skipped],
             ["Failed", c.failed],
+            ["Over limit", c.over_limit],
+            ["Chunks", c.chunks],
           ] as const
         ).map(([label, value]) => (
           <div key={label} className="rounded-md bg-panel px-3 py-2">
@@ -114,6 +118,10 @@ export function JobProgress({ initial }: { initial: Job }) {
           </table>
         </details>
       )}
+      {prescan?.status === "skipped" && (
+        <p className="text-xs text-muted">Length pre-scan skipped: {prescan.reason}</p>
+      )}
+      {analysis && <AnalysisReport analysis={analysis} />}
       {samples && samples.length > 0 && (
         <div>
           <h3 className="mb-2 text-sm font-medium">Dry-run output (vectors truncated)</h3>
@@ -122,6 +130,87 @@ export function JobProgress({ initial }: { initial: Job }) {
           </pre>
         </div>
       )}
+    </div>
+  );
+}
+
+interface FieldAnalysis {
+  provider: string;
+  model: string;
+  long_input: string;
+  token_count: "exact" | "estimated";
+  max_tokens: number | null;
+  documents: number;
+  missing_text: number;
+  over_limit?: number;
+  over_limit_pct?: number;
+  tokens?: { median: number; p90: number; p99: number; max: number };
+  longest?: { document: string; tokens: number }[];
+  note?: string;
+}
+
+interface Analysis {
+  documents: number;
+  over_limit_documents: number;
+  fields: Record<string, FieldAnalysis>;
+}
+
+function AnalysisReport({ analysis }: { analysis: Analysis }) {
+  return (
+    <div className="flex flex-col gap-3">
+      <h3 className="text-sm font-medium">
+        Text lengths: {formatNumber(analysis.over_limit_documents)} of{" "}
+        {formatNumber(analysis.documents)} documents over the model limit
+      </h3>
+      {Object.entries(analysis.fields).map(([target, f]) => (
+        <div key={target} className="rounded-md bg-panel p-3 text-sm">
+          <div className="mb-2">
+            <b>{target}</b>{" "}
+            <span className="text-muted">
+              {f.provider}/{f.model}
+              {f.max_tokens != null && <> · limit {formatNumber(f.max_tokens)} tokens</>}
+              {" "}· long_input: {f.long_input}
+              {f.token_count === "estimated" && <> · token counts estimated</>}
+            </span>
+          </div>
+          {f.note && <p className="text-muted">{f.note}</p>}
+          {f.tokens && (
+            <dl className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+              {(
+                [
+                  ["Over limit", `${formatNumber(f.over_limit ?? 0)} (${f.over_limit_pct ?? 0}%)`],
+                  ["Median", f.tokens.median],
+                  ["p90", f.tokens.p90],
+                  ["p99", f.tokens.p99],
+                  ["Max", f.tokens.max],
+                  ["No text", f.missing_text],
+                ] as const
+              ).map(([label, value]) => (
+                <div key={label}>
+                  <dt className="text-xs text-muted">{label}</dt>
+                  <dd className="font-semibold">
+                    {typeof value === "number" ? formatNumber(value) : value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
+          {f.longest && f.longest.length > 0 && (
+            <details className="mt-2">
+              <summary className="cursor-pointer text-xs text-muted">
+                Longest documents over the limit
+              </summary>
+              <ul className="mt-1 font-mono text-xs">
+                {f.longest.map((d) => (
+                  <li key={d.document}>
+                    {d.document}: {formatNumber(d.tokens)} tokens
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </div>
+      ))}
     </div>
   );
 }

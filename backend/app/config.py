@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     # Remote sources (POST /load/url). Empty allow-list = any host.
     allow_url_sources: bool = True
     url_allowed_hosts: list[str] = Field(default_factory=list)
+    #: Sanity cap on a URL load saved to disk for the `long_input: error` pre-scan (all URLs).
+    max_url_download_mb: int = 500
 
     # Embedding defaults
     embed_concurrency: int = 4

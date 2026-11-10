@@ -159,7 +159,7 @@ async def load_documents(
         kind="load_documents",
         collection=body.collection,
         database=conn.database,
-        config={"documents": len(body.documents), "dry_run": body.dry_run},
+        config={"documents": len(body.documents), "dry_run": body.dry_run, "analyze": body.analyze},
         total=len(body.documents)
         if not body.max_documents
         else min(len(body.documents), body.max_documents),
@@ -226,7 +226,12 @@ async def load_file(
         kind="load_file",
         collection=opts.collection,
         database=conn.database,
-        config={"filename": file.filename, "format": opts.format, "dry_run": opts.dry_run},
+        config={
+            "filename": file.filename,
+            "format": opts.format,
+            "dry_run": opts.dry_run,
+            "analyze": opts.analyze,
+        },
         total=total,
         bytes_total=source.bytes_total,
         runner=lambda h: run_load(h, db, opts, source),
@@ -270,7 +275,12 @@ async def load_url(
         kind="load_url",
         collection=body.collection,
         database=conn.database,
-        config={"urls": urls, "format": body.format, "dry_run": body.dry_run},
+        config={
+            "urls": urls,
+            "format": body.format,
+            "dry_run": body.dry_run,
+            "analyze": body.analyze,
+        },
         bytes_total=bytes_total,
         runner=lambda h: run_load(h, db, body, source),
     )

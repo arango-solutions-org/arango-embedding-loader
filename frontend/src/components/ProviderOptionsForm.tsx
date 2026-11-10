@@ -1,4 +1,4 @@
-import { Checkbox, Field, Input } from "./ui";
+import { Checkbox, Field, Input, Select } from "./ui";
 
 interface PropSchema {
   type?: string;
@@ -7,6 +7,8 @@ interface PropSchema {
   default?: unknown;
   title?: string;
   anyOf?: PropSchema[];
+  enum?: string[];
+  $ref?: string;
 }
 
 function resolveType(schema: PropSchema): { type: string; secret: boolean } {
@@ -26,6 +28,16 @@ export function ProviderOptionsForm({
   onChange: (v: Record<string, unknown>) => void;
 }) {
   const properties = (schema?.properties ?? {}) as Record<string, PropSchema>;
+  const defs = (schema?.$defs ?? {}) as Record<string, PropSchema>;
+  // Pydantic emits Literal fields inline (`enum`) or, when reused, as a `$ref` into `$defs`.
+  const enumOf = (prop: PropSchema): string[] | undefined => {
+    const variants = prop.anyOf ?? [prop];
+    for (const v of variants) {
+      const resolved = v.$ref ? defs[v.$ref.split("/").pop() ?? ""] : v;
+      if (resolved?.enum) return resolved.enum;
+    }
+    return undefined;
+  };
   const entries = Object.entries(properties);
   if (!entries.length) return null;
   const set = (key: string, v: unknown) => onChange({ ...value, [key]: v });
@@ -46,6 +58,24 @@ export function ProviderOptionsForm({
                 hint={prop.description}
               />
             </div>
+          );
+        }
+        const options = enumOf(prop);
+        if (options) {
+          return (
+            <Field key={key} label={label} hint={prop.description}>
+              <Select
+                value={(value[key] as string | undefined) ?? (prop.default as string) ?? ""}
+                onChange={(e) => set(key, e.target.value)}
+              >
+                {options.map((o) => (
+                  <option key={o} value={o}>
+                    {o}
+                    {o === prop.default ? " (default)" : ""}
+                  </option>
+                ))}
+              </Select>
+            </Field>
           );
         }
         return (

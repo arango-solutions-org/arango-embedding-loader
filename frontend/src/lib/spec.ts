@@ -27,6 +27,61 @@ export interface LabeledField {
 
 export type OnMissing = "skip" | "null" | "error";
 
+export type LongInputMode = NonNullable<EmbeddingFieldSpec["long_input"]>;
+
+/** Choices for `long_input`, in the order shown in the GUI. */
+export const LONG_INPUT_MODES: { value: LongInputMode; label: string }[] = [
+  { value: "truncate_end", label: "Keep the first tokens (truncate the end)" },
+  { value: "truncate_start", label: "Keep the last tokens (truncate the start)" },
+  { value: "truncate_middle", label: "Keep the start and the end (truncate the middle)" },
+  { value: "chunk_mean", label: "Embed overlapping chunks, store their mean" },
+  { value: "chunk_docs", label: "Store each chunk as its own document" },
+  { value: "skip", label: "Don't embed the document" },
+  { value: "error", label: "Fail the job" },
+];
+
+export interface LongInputSettings {
+  mode: LongInputMode;
+  overlap: string;
+  maxTokens: string;
+  tokenChars: string;
+  warn: boolean;
+}
+
+export const DEFAULT_LONG_INPUT: LongInputSettings = {
+  mode: "chunk_docs",
+  overlap: "25",
+  maxTokens: "",
+  tokenChars: "",
+  warn: true,
+};
+
+/** Spec fields for the long-input settings; blank numbers fall back to server defaults. */
+export function longInputFields(s: LongInputSettings): Partial<EmbeddingFieldSpec> {
+  const num = (v: string) => (v.trim() && Number(v) > 0 ? Number(v) : undefined);
+  const overlap = s.overlap.trim() === "" ? undefined : Math.max(0, Number(s.overlap) || 0);
+  return {
+    long_input: s.mode,
+    warn_on_long_input: s.warn,
+    ...(overlap !== undefined ? { chunk_overlap_tokens: overlap } : {}),
+    ...(num(s.maxTokens) ? { max_tokens: num(s.maxTokens) } : {}),
+    ...(num(s.tokenChars) ? { token_chars: num(s.tokenChars) } : {}),
+  };
+}
+
+/** Server defaults for the long-input fields (see `EmbeddingFieldSpec`). */
+export const LONG_INPUT_DEFAULTS = {
+  long_input: "chunk_docs" as LongInputMode,
+  chunk_overlap_tokens: 25,
+  token_chars: 3,
+  warn_on_long_input: true,
+};
+
+/** Every long-input field, defaults filled in: for requests whose generated type needs them all. */
+export function longInputRequest(s: LongInputSettings) {
+  return { ...LONG_INPUT_DEFAULTS, max_tokens: null, ...longInputFields(s) };
+}
+
 export function defaultTarget(path: string, isOnly: boolean): string {
   return isOnly ? "embedding" : `${path.replace(/\./g, "_")}_embedding`;
 }
@@ -56,8 +111,13 @@ export function buildSpecs(
   choice: ModelChoice,
   onMissing: OnMissing,
   templateTarget = "embedding",
+  longInput: LongInputSettings = DEFAULT_LONG_INPUT,
 ): EmbeddingFieldSpec[] {
-  const common = { ...modelSpecFields(choice), on_missing: onMissing };
+  const common = {
+    ...modelSpecFields(choice),
+    on_missing: onMissing,
+    ...longInputFields(longInput),
+  };
   if (template) {
     return [{ template, target_field: templateTarget, ...common } as EmbeddingFieldSpec];
   }

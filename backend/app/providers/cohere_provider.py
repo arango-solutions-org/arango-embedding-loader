@@ -12,17 +12,23 @@ from app.providers.base import (
     EmbeddingProvider,
     InputType,
     ModelInfo,
+    NativeTruncationOptions,
     ProviderOptions,
 )
 
 
-class CohereOptions(ProviderOptions):
+def cohere_truncate(mode: str) -> str:
+    """Cohere's `truncate` for a `long_input` mode. Modes the loader applies itself keep `END`
+    as a backstop for estimated token counts."""
+    return {"truncate_start": "START", "error": "NONE"}.get(mode, "END")
+
+
+class CohereOptions(NativeTruncationOptions):
     api_key: SecretStr | None = Field(
         default_factory=lambda: SecretStr(v) if (v := os.getenv("COHERE_API_KEY")) else None,
         description="API key. Defaults to $COHERE_API_KEY.",
     )
     base_url: str | None = Field(None, description="Override API base URL.")
-    truncate: str = Field("END", description="NONE | START | END")
     timeout: float = Field(60.0, description="Request timeout in seconds.")
 
 
@@ -37,15 +43,18 @@ class CohereProvider(EmbeddingProvider):
     default_model = "embed-v4.0"
     supports_dimensions = True
     known_models = (
-        ModelInfo(id="embed-v4.0", dimension=1536),
-        ModelInfo(id="embed-english-v3.0", dimension=1024),
-        ModelInfo(id="embed-multilingual-v3.0", dimension=1024),
-        ModelInfo(id="embed-english-light-v3.0", dimension=384),
-        ModelInfo(id="embed-multilingual-light-v3.0", dimension=384),
+        ModelInfo(id="embed-v4.0", dimension=1536, max_tokens=128000),
+        ModelInfo(id="embed-english-v3.0", dimension=1024, max_tokens=512),
+        ModelInfo(id="embed-multilingual-v3.0", dimension=1024, max_tokens=512),
+        ModelInfo(id="embed-english-light-v3.0", dimension=384, max_tokens=512),
+        ModelInfo(id="embed-multilingual-light-v3.0", dimension=384, max_tokens=512),
     )
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        return frozenset({"truncate_end", "truncate_start"})
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, CohereOptions)
@@ -85,7 +94,7 @@ class CohereProvider(EmbeddingProvider):
             "model": model,
             "input_type": "search_document" if input_type == "document" else "search_query",
             "embedding_types": ["float"],
-            "truncate": options.truncate,
+            "truncate": cohere_truncate(options.long_input_mode),
         }
         if dimensions:
             kwargs["output_dimension"] = dimensions

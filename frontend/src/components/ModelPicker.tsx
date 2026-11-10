@@ -4,16 +4,27 @@ import { useState } from "react";
 
 import { api, unwrap } from "../api/client";
 import { useModels, usePresets, useProviders } from "../lib/queries";
-import { cleanOptions, resolvedModel, resolvedProvider, type ModelChoice } from "../lib/spec";
+import {
+  cleanOptions,
+  DEFAULT_LONG_INPUT,
+  longInputRequest,
+  resolvedModel,
+  resolvedProvider,
+  type LongInputSettings,
+  type ModelChoice,
+} from "../lib/spec";
 import { ProviderOptionsForm } from "./ProviderOptionsForm";
 import { Badge, Button, ErrorPanel, Field, Input, Segmented, Select } from "./ui";
 
 export function ModelPicker({
   value,
   onChange,
+  longInput = DEFAULT_LONG_INPUT,
 }: {
   value: ModelChoice;
   onChange: (v: ModelChoice) => void;
+  /** Applied to the test embedding exactly as a load would apply it. */
+  longInput?: LongInputSettings;
 }) {
   const providers = useProviders();
   const presets = usePresets();
@@ -35,6 +46,7 @@ export function ModelPicker({
             provider_options: cleanOptions(value.options),
             input_type: "document",
             include_vectors: false,
+            ...longInputRequest(longInput),
           },
         }),
       ),

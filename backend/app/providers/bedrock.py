@@ -14,11 +14,13 @@ from app.providers.base import (
     EmbeddingProvider,
     InputType,
     ModelInfo,
+    NativeTruncationOptions,
     ProviderOptions,
 )
+from app.providers.cohere_provider import cohere_truncate
 
 
-class BedrockOptions(ProviderOptions):
+class BedrockOptions(NativeTruncationOptions):
     region: str | None = Field(
         default_factory=lambda: os.getenv("AWS_REGION") or os.getenv("AWS_DEFAULT_REGION"),
         description="AWS region. Defaults to $AWS_REGION.",
@@ -42,14 +44,19 @@ class BedrockProvider(EmbeddingProvider):
     default_model = "amazon.titan-embed-text-v2:0"
     supports_dimensions = True
     known_models = (
-        ModelInfo(id="amazon.titan-embed-text-v2:0", dimension=1024),
-        ModelInfo(id="amazon.titan-embed-text-v1", dimension=1536),
-        ModelInfo(id="cohere.embed-english-v3", dimension=1024),
-        ModelInfo(id="cohere.embed-multilingual-v3", dimension=1024),
+        ModelInfo(id="amazon.titan-embed-text-v2:0", dimension=1024, max_tokens=8192),
+        ModelInfo(id="amazon.titan-embed-text-v1", dimension=1536, max_tokens=8192),
+        ModelInfo(id="cohere.embed-english-v3", dimension=1024, max_tokens=512),
+        ModelInfo(id="cohere.embed-multilingual-v3", dimension=1024, max_tokens=512),
     )
 
     def __init__(self) -> None:
         self._clients: dict[str, Any] = {}
+
+    def native_long_input(self, model: str) -> frozenset[str]:
+        if model.startswith("cohere."):
+            return frozenset({"truncate_end", "truncate_start"})
+        return frozenset()  # Titan has no truncation option
 
     def check_configuration(self, options: ProviderOptions) -> Availability:
         assert isinstance(options, BedrockOptions)
@@ -110,7 +117,7 @@ class BedrockProvider(EmbeddingProvider):
             body: dict[str, Any] = {
                 "texts": texts,
                 "input_type": "search_document" if input_type == "document" else "search_query",
-                "truncate": "END",
+                "truncate": cohere_truncate(options.long_input_mode),
             }
             result = await asyncio.to_thread(self._invoke, client, model, body)
             embeddings = result["embeddings"]
